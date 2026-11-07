@@ -79,3 +79,4 @@ async function handleCron(req: Request) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+

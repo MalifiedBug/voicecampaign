@@ -50,3 +50,4 @@ export async function deleteS3Object(key: string) {
     console.error('Error deleting S3 object:', err);
   }
 }
+
