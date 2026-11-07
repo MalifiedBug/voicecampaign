@@ -112,6 +112,8 @@ async def opportunistic_cron_middleware(request: Request, call_next):
 
 # --- Web UI ---
 @app.get("/", response_class=HTMLResponse)
+@app.get("/api/index", response_class=HTMLResponse)
+@app.get("/api/index/", response_class=HTMLResponse)
 def index_page():
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
