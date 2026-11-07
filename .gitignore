@@ -10,3 +10,7 @@ data/audio/*
 .agents/
 skills-lock.json
 
+node_modules
+.next/
+.vercel
+
