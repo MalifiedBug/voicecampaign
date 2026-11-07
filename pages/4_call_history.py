@@ -5,16 +5,29 @@ Call History & CDR Analytics Page: Inspect Detailed Call Records and Telephony M
 import streamlit as st
 import pandas as pd
 import io
-from database import get_call_logs
+from database import get_call_logs, is_postgres, get_database_url
 
 st.title("📊 Call Detail Records (CDR) & History")
-st.caption("Inspect live call telemetry, durations, hangup reasons, and VobizXML executions.")
+st.caption("Inspect live call telemetry, durations, hangup reasons, and VobizXML executions stored directly in the database.")
 
-# Fetch logs
-logs = get_call_logs(limit=200)
+# Database Backend Telemetry Banner
+db_is_pg = is_postgres()
+db_host = (get_database_url() or "").split("@")[-1] if db_is_pg else "data/voicecampaign.db"
+db_label = "Supabase PostgreSQL" if db_is_pg else "SQLite"
+
+col_db1, col_db2 = st.columns([3, 1])
+with col_db1:
+    st.info(f"🗄️ **Database Source:** `🟢 {db_label}` — `{db_host}` (Single Source of Truth for Call History)")
+with col_db2:
+    if st.button("🔄 Refresh Records from DB", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+# Fetch logs directly from database
+logs = get_call_logs(limit=300)
 
 if not logs:
-    st.info("No outbound calls recorded yet. Place an instant call or run a schedule to see telemetry.")
+    st.info("No outbound calls recorded yet in the database. Place an instant call or run a schedule to see real-time DB telemetry.")
 else:
     # Filter controls
     f_col1, f_col2, f_col3 = st.columns([1.5, 1, 1])
@@ -31,7 +44,7 @@ else:
         st.download_button(
             label="📥 Export CSV",
             data=csv_buffer.getvalue(),
-            file_name="farmcalling_call_logs.csv",
+            file_name="voice_campaign_call_logs.csv",
             mime="text/csv",
             width="stretch"
         )

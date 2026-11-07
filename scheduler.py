@@ -1,5 +1,5 @@
 """
-Scheduler Module for FarmCalling.
+Scheduler Module for Voice Campaign.
 Manages timed call executions using APScheduler and SQLite persistence.
 Supports:
 - One-time call at specific Date & Time
@@ -31,7 +31,7 @@ from database import (
 from vobiz_client import VobizClient
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("farmcalling.scheduler")
+logger = logging.getLogger("voicecampaign.scheduler")
 
 scheduler: Optional[BackgroundScheduler] = None
 
@@ -437,7 +437,7 @@ def trigger_call_now(
         ring_timeout=ring_timeout,
         time_limit=time_limit,
         machine_detection=amd,
-        caller_name="FarmCalling Automated Alert"
+        caller_name="Voice Campaign Automated Alert"
     )
 
     if success:

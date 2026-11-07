@@ -1,4 +1,4 @@
-# 🌾 FarmCalling — Vobiz Voice Automation Platform
+# 🎙️ Voice Campaign — Vobiz Voice Automation Platform
 
 > An enterprise-grade automated outbound telephony application built on the **Vobiz Voice API & Applications engine**. Schedule phone calls on specific date/times, intervals, or recurring schedules, play uploaded or microphone-recorded audio prompts, and automatically hang up the call upon completion.
 
@@ -13,7 +13,14 @@
    - **Instant Dial ("Call Now"):** Test dial any number on demand with 1-click.
    - **Bulk Calling Support:** Dial multiple numbers simultaneously using Vobiz `<` delimiter (e.g. `+919876543210<+919876543211`).
 
-2. **Audio Studio (Record, Upload, and Cut Call):**
+2. **Bulk Contacts & Audience Management (.vcf Support):**
+   - **vCard (.vcf) Bulk Uploader:** Import address books directly from Android, iPhone/iCloud, Google Contacts, Outlook, or WhatsApp (`.vcf` versions 2.1, 3.0, and 4.0).
+   - **Smart Phone Normalization:** Standardizes arbitrary formats (e.g. `+91 (987) 654-3210`, `09876543210`, `9876543210`) to dialable E.164 formats (`+919876543210`).
+   - **Automated Contact List Population:** Automatically deduplicates phone numbers, enriches contact details (Name, Organization, Email, Group/Tag), and allows 1-click campaign population.
+   - **Multi-Contact Campaign Launcher:** Directly populates the campaign recipient list with formatted Vobiz bulk destinations (`+919876543210<+919876543211<...`).
+   - **Export Capabilities:** Export contacts directory to standard `.csv` or `.vcf` format.
+
+3. **Audio Studio (Record, Upload, and Cut Call):**
    - **Microphone Recording:** Record announcements directly in your web browser using HTML5 / Streamlit microphone recording.
    - **Audio File Upload:** Upload standard `.mp3` or `.wav` files with built-in duration analysis and in-browser audio player.
    - **Text-to-Speech (TTS) Synthesizer:** Create virtual voice prompts with customizable voices (`WOMAN`, `MAN`) and multi-language accents (`en-US`, `en-IN`, `hi-IN`).
@@ -45,13 +52,13 @@
 
 In production, **Vobiz credentials should never be typed into the web browser**. Because serverless platforms like Vercel run ephemeral container instances where `/tmp/` is reset on cold starts, all Vobiz credentials, caller IDs, and base URLs must be configured as **Environment Variables** in Vercel.
 
-When environment variables are present, FarmCalling automatically locks the web settings form to prevent accidental changes, masks sensitive auth tokens, and reads credentials directly from `os.environ`.
+When environment variables are present, Voice Campaign automatically locks the web settings form to prevent accidental changes, masks sensitive auth tokens, and reads credentials directly from `os.environ`.
 
 ### 1. What's Included for Vercel
 - **`vercel.json`**: Configures the `@vercel/python` builder, route rewrites, and a daily **Vercel Cron** (`0 0 * * *` calling `/api/cron`, fully compliant with Vercel Hobby plan). For sub-daily triggers (e.g. every minute) on the free tier, free services like [cron-job.org](https://cron-job.org) can ping `/api/cron`.
 - **`api/index.py`**: ASGI serverless entrypoint routing requests to FastAPI.
 - **Serverless Web Dashboard (`static/index.html`)**: Mobile-ready Tailwind CSS dashboard served at `https://your-project.vercel.app/`.
-- **Serverless Storage Adapter**: Seamlessly operates with `/tmp/farmcalling.db` and `/tmp/audio/` in Vercel's ephemeral serverless environment.
+- **Serverless Storage Adapter**: Seamlessly operates with `/tmp/voicecampaign.db` and `/tmp/audio/` in Vercel's ephemeral serverless environment.
 
 ---
 
@@ -60,12 +67,12 @@ When environment variables are present, FarmCalling automatically locks the web 
 Configure these variables in your Vercel Project Settings:
 
 | Environment Variable | Required | Description | Example |
-| :--- | :---: | :--- | :--- |
+| :--- | :--- | :--- | :--- |
 | `VOBIZ_AUTH_ID` | **Yes** | Your Vobiz Account Auth ID | `MA_WTGRSXR3XXXXXXXX` |
 | `VOBIZ_AUTH_TOKEN` | **Yes** | Your Vobiz Account Auth Token | `4c8928374d6f8a...` |
 | `VOBIZ_CALLER_ID` | **Yes** | Verified Vobiz phone number or DID in E.164 | `+919876543210` |
 | `WEBHOOK_BASE_URL` | *Optional* | Your public Vercel HTTPS URL (auto-detected if omitted) | `https://your-project.vercel.app` |
-| `VOBIZ_APP_NAME` | *Optional* | Name for Vobiz Application registration | `FarmCalling-Voice-App` |
+| `VOBIZ_APP_NAME` | *Optional* | Name for Vobiz Application registration | `Voice-Campaign-App` |
 | `VOBIZ_TIMEZONE` | *Optional* | Application timezone (default: `Asia/Kolkata`) | `Asia/Kolkata` |
 | `VOBIZ_RING_TIMEOUT` | *Optional* | Ring timeout in seconds (default: `30`) | `30` |
 | `VOBIZ_TIME_LIMIT` | *Optional* | Max call duration in seconds (default: `3600`) | `3600` |
@@ -225,7 +232,7 @@ Because Vobiz runs on the public cloud, it must be able to reach your webhook se
 ngrok http 8000
 ```
 1. Copy the forwarded HTTPS URL (e.g. `https://your-domain.ngrok-free.app`).
-2. Open **Settings -> Webhook & Tunneling** in FarmCalling.
+2. Open **Settings -> Webhook & Tunneling** in Voice Campaign.
 3. Paste your ngrok URL into **Public Webhook Base URL** and click **Save**.
 
 ### Option B: Using localtunnel (No sign-up)
@@ -238,28 +245,31 @@ npx localtunnel --port 8000
 ## 📂 Project Structure
 
 ```
-farmcalling/
+voicecampaign/
 ├── .streamlit/
 │   └── config.toml           # Enterprise theme styling (Dark mode)
 ├── app.py                    # Main Streamlit application & navigation router
-├── server.py                 # FastAPI Webhook & Audio streaming server
+├── server.py                 # FastAPI Webhook, Audio & Contacts REST API server
 ├── scheduler.py              # APScheduler background automation engine
 ├── vobiz_client.py           # Vobiz REST API client & VobizXML builder
+├── vcf_parser.py             # vCard (.vcf) bulk import, phone normalizer & exporter
 ├── audio_manager.py          # Microphone recording & audio asset manager
-├── database.py               # SQLite database & persistence layer
+├── database.py               # Supabase Postgres & SQLite persistence layer
 ├── run.py                    # Unified single-command launcher
 ├── tests/
-│   ├── test_farmcalling.py   # Unit & integration tests
-│   └── test_streamlit_app.py # Automated Streamlit AppTest
+│   ├── test_farmcalling.py      # Telephony & webhooks unit & integration tests
+│   ├── test_vcf_and_contacts.py # vCard parser & contacts API tests
+│   └── test_streamlit_app.py    # Automated Streamlit AppTest suite
 ├── data/
 │   ├── audio/                # Local storage for recorded & uploaded audio
-│   └── farmcalling.db        # SQLite database
+│   └── voicecampaign.db      # SQLite database
 ├── pages/
 │   ├── 1_dashboard.py        # KPIs, quick dialer, recent activity
-│   ├── 2_schedules.py        # Date/Time, Interval, Cron scheduling
+│   ├── 2_schedules.py        # Date/Time, Interval, Cron scheduling & bulk recipients
 │   ├── 3_audio_studio.py     # Mic recorder, file uploader, TTS, library
 │   ├── 4_call_history.py     # Call logs, CDR telemetry, CSV export
-│   └── 5_settings.py         # Credentials, app sync, policies, simulator
+│   ├── 5_settings.py         # Credentials, app sync, policies, simulator
+│   └── 6_contacts.py         # Bulk .vcf contact uploader, directory & audience actions
 └── requirements.txt
 ```
 

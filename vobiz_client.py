@@ -1,5 +1,5 @@
 """
-Vobiz Client Module for FarmCalling.
+Vobiz Client Module for Voice Campaign.
 Handles Vobiz REST API communication and VobizXML generation.
 """
 

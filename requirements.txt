@@ -51,4 +51,3 @@ tzdata==2026.6
 tzlocal==5.3.1
 urllib3==2.6.3
 uvicorn==0.39.0
-vobiz @ git+https://github.com/vobiz-ai/Vobiz-Python-SDK.git@eab8ed568eb5c18f2c3cb2f9ab9ceacfd838dd6d

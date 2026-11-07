@@ -1,5 +1,5 @@
 """
-FarmCalling Background Telephony Daemon Worker.
+Voice Campaign Background Telephony Daemon Worker.
 Continuously polls and triggers due schedules in Indian Standard Time (Asia/Kolkata).
 Usage:
     python daemon_worker.py
@@ -17,11 +17,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger("farmcalling.daemon")
+logger = logging.getLogger("voicecampaign.daemon")
 
 def main():
     logger.info("=" * 60)
-    logger.info("🚜 FarmCalling Telephony Daemon Worker Started")
+    logger.info("🎙️ Voice Campaign Telephony Daemon Worker Started")
     logger.info("Timezone: Indian Standard Time (Asia/Kolkata, UTC+5:30)")
     logger.info("Polling active campaigns every 15 seconds...")
     logger.info("=" * 60)

@@ -17,6 +17,18 @@ class TestStreamlitApp(unittest.TestCase):
         # Verify title or header exists
         self.assertTrue(len(at.title) > 0 or len(at.sidebar) > 0)
 
+    def test_contacts_page_renders(self):
+        at = AppTest.from_file("pages/6_contacts.py", default_timeout=60)
+        at.run()
+        self.assertFalse(at.exception)
+        self.assertTrue(len(at.title) > 0)
+
+    def test_schedules_page_renders(self):
+        at = AppTest.from_file("pages/2_schedules.py", default_timeout=60)
+        at.run()
+        self.assertFalse(at.exception)
+        self.assertTrue(len(at.title) > 0)
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -14,7 +14,8 @@ from database import (
     get_audio_assets,
     get_audio_asset,
     get_effective_audio_id,
-    get_settings
+    get_settings,
+    get_contacts
 )
 from scheduler import trigger_call_now
 
@@ -56,9 +57,22 @@ with left_col:
     if not configured:
         st.warning("⚠️ Vobiz credentials or Outbound Caller ID not configured. Please visit **Settings** to set up your Auth ID and phone number.")
 
+    # Pre-populate if passed from Contacts Directory
+    default_dial_num = st.session_state.pop("instant_dial_number", "")
+
+    # Quick contact picker
+    all_contacts_quick = get_contacts(limit=100)
+    if all_contacts_quick:
+        with st.expander("👥 Pick from Contacts Directory", expanded=False):
+            c_quick_opts = {f"{c['name']} ({c['phone']})": c['phone'] for c in all_contacts_quick}
+            sel_c = st.selectbox("Select Contact", ["-- Choose Contact --"] + list(c_quick_opts.keys()))
+            if sel_c != "-- Choose Contact --":
+                default_dial_num = c_quick_opts[sel_c]
+
     with st.form("instant_call_form", clear_on_submit=False):
         to_phone = st.text_input(
             "Destination Phone Number (E.164 format)",
+            value=default_dial_num,
             placeholder="+919876543210 or 14155551234",
             help="Include country code, e.g. +91 for India or +1 for US/Canada."
         )
@@ -91,7 +105,7 @@ with left_col:
         if play_mode == "Custom Text-to-Speech (TTS)":
             tts_message = st.text_area(
                 "Text-to-Speech Script",
-                value="Hello! This is a test alert from FarmCalling. Have a productive day! Goodbye.",
+                value="Hello! This is a test alert from Voice Campaign. Have a productive day! Goodbye.",
                 height=80
             )
 
@@ -150,11 +164,19 @@ with right_col:
 
 # 3. Recent Call Activity
 st.markdown("---")
-st.subheader("📋 Recent Call Logs")
+col_log_h1, col_log_h2 = st.columns([3, 1])
+with col_log_h1:
+    st.subheader("📋 Recent Call Logs")
+    st.caption("Real-time telemetry loaded directly from the database.")
+with col_log_h2:
+    st.write("")
+    if st.button("🔄 Refresh Logs from DB", key="dash_refresh_logs", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-logs = get_call_logs(limit=10)
+logs = get_call_logs(limit=15)
 if not logs:
-    st.info("No call logs recorded yet.")
+    st.info("No call logs recorded in database yet. Dial a number above or schedule a campaign to see live records.")
 else:
     table_data = []
     for log in logs:

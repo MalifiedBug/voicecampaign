@@ -1,5 +1,5 @@
 """
-FastAPI Server for FarmCalling (Vercel Serverless Ready).
+FastAPI Server for Voice Campaign (Vercel Serverless Ready).
 Provides:
 - Web dashboard at /
 - Audio streaming endpoints for Vobiz (<Play> URL)
@@ -41,18 +41,26 @@ from database import (
     create_call_log,
     update_call_log,
     get_call_logs,
-    get_call_stats
+    get_call_stats,
+    create_contact,
+    bulk_create_contacts,
+    get_contacts,
+    get_contact,
+    delete_contact,
+    clear_all_contacts,
+    get_contacts_count
 )
 from audio_manager import save_uploaded_audio, save_recorded_audio, create_tts_asset
+from vcf_parser import parse_vcf_bytes, export_contacts_to_vcf
 from vobiz_client import VobizClient
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("farmcalling.server")
+logger = logging.getLogger("voicecampaign.server")
 
 # Ensure DB is initialized
 init_db()
 
-app = FastAPI(title="FarmCalling Telephony Platform", version="1.0.0")
+app = FastAPI(title="Voice Campaign Telephony Platform", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,7 +70,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if not os.path.exists(STATIC_DIR):
+    for _cand in [
+        os.path.join(os.getcwd(), "static"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+    ]:
+        if os.path.exists(_cand):
+            STATIC_DIR = _cand
+            break
 
 # --- Opportunistic Background Dispatcher ---
 # Evaluates due schedules in IST whenever incoming traffic hits the server
@@ -100,14 +116,14 @@ def index_page():
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
             return f.read()
-    return "<h1>FarmCalling API is running</h1>"
+    return "<h1>Voice Campaign API is running</h1>"
 
 @app.get("/health")
 def health_check():
     from database import get_db_mode, is_postgres
     return {
         "status": "healthy",
-        "service": "FarmCalling Telephony Engine",
+        "service": "Voice Campaign Telephony Engine",
         "database_backend": get_db_mode(),
         "is_supabase_postgres": is_postgres(),
         "vercel_serverless": bool(os.environ.get("VERCEL")),
@@ -378,7 +394,9 @@ async def answer_webhook(
             call_uuid=call_uuid,
             status="in-progress",
             answered_at=datetime.now().isoformat(),
-            notes="Call answered. VobizXML dispatched."
+            notes="Call answered. VobizXML dispatched.",
+            to_number=to_num,
+            from_number=from_num
         )
 
     return Response(content=xml_content, media_type="application/xml; charset=utf-8")
@@ -394,6 +412,9 @@ async def hangup_webhook(request: Request):
             pass
 
     call_uuid = form_data.get("CallUUID") or request.query_params.get("CallUUID", "")
+    request_uuid = form_data.get("RequestUUID") or request.query_params.get("RequestUUID", "")
+    from_num = form_data.get("From") or request.query_params.get("From", "")
+    to_num = form_data.get("To") or request.query_params.get("To", "")
     call_status = form_data.get("CallStatus") or request.query_params.get("CallStatus", "completed")
     duration_str = form_data.get("Duration") or request.query_params.get("Duration", "0")
     hangup_cause = form_data.get("HangupCause") or request.query_params.get("HangupCause", "NORMAL_CLEARING")
@@ -403,7 +424,7 @@ async def hangup_webhook(request: Request):
     except ValueError:
         duration = 0
 
-    if call_uuid:
+    if call_uuid or request_uuid:
         final_status = "completed"
         if hangup_cause in ["USER_BUSY", "CALL_REJECTED"]:
             final_status = "busy"
@@ -418,7 +439,10 @@ async def hangup_webhook(request: Request):
             ended_at=datetime.now().isoformat(),
             duration=duration,
             hangup_cause=hangup_cause,
-            notes=f"Call hung up with {hangup_cause} ({duration}s)"
+            notes=f"Call hung up with {hangup_cause} ({duration}s)",
+            to_number=to_num,
+            from_number=from_num,
+            request_uuid=request_uuid
         )
 
     return JSONResponse(content={"status": "acknowledged", "call_uuid": call_uuid})
@@ -682,7 +706,7 @@ def api_create_app():
     if not base_url or "example.com" in base_url:
         return {"success": False, "message": "Please configure a valid Public Webhook Base URL."}
 
-    app_name = s.get("app_name", "FarmCalling-Voice-App")
+    app_name = s.get("app_name", "Voice-Campaign-App")
     success, msg, data = client.create_application(
         app_name=app_name,
         answer_url=f"{base_url}/webhook/answer",
@@ -692,3 +716,84 @@ def api_create_app():
         app_id = data.get("app_id", "")
         update_settings({"app_id": app_id})
     return {"success": success, "message": msg, "data": data}
+
+# --- REST API for Contacts & .vcf Bulk Upload ---
+
+class CreateContactPayload(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    organization: Optional[str] = None
+    notes: Optional[str] = None
+    group_tag: Optional[str] = "Default"
+
+@app.get("/api/contacts")
+def api_get_contacts(search: Optional[str] = None, group: Optional[str] = None, limit: int = 1000):
+    return {
+        "total": get_contacts_count(),
+        "contacts": get_contacts(search_query=search, group_filter=group, limit=limit)
+    }
+
+@app.post("/api/contacts")
+def api_create_contact(payload: CreateContactPayload):
+    cid = create_contact(
+        name=payload.name,
+        phone=payload.phone,
+        email=payload.email,
+        organization=payload.organization,
+        notes=payload.notes,
+        group_tag=payload.group_tag or "Default",
+        source="manual"
+    )
+    return {"success": True, "contact_id": cid}
+
+@app.post("/api/contacts/upload-vcf")
+async def api_upload_vcf(
+    vcf_file: UploadFile = File(...),
+    group_tag: Optional[str] = Form("Bulk-Import"),
+    default_country_code: Optional[str] = Form("+91"),
+    update_duplicates: Optional[bool] = Form(True)
+):
+    content = await vcf_file.read()
+    contacts = parse_vcf_bytes(
+        file_bytes=content,
+        default_country_code=default_country_code or "+91",
+        default_group=group_tag or "Bulk-Import"
+    )
+    if not contacts:
+        return {
+            "success": False,
+            "message": "No valid contacts with dialable phone numbers could be extracted from this .vcf file.",
+            "total_parsed": 0,
+            "summary": {"total": 0, "added": 0, "updated": 0, "skipped": 0}
+        }
+
+    summary = bulk_create_contacts(contacts, update_duplicates=bool(update_duplicates))
+    return {
+        "success": True,
+        "message": f"Successfully parsed and populated {summary['added']} new contacts (updated {summary['updated']}).",
+        "total_parsed": len(contacts),
+        "summary": summary,
+        "contacts": contacts[:50]
+    }
+
+@app.get("/api/contacts/export-vcf")
+def api_export_vcf():
+    contacts = get_contacts(limit=5000)
+    vcf_text = export_contacts_to_vcf(contacts)
+    return Response(
+        content=vcf_text,
+        media_type="text/vcard",
+        headers={"Content-Disposition": 'attachment; filename="contacts.vcf"'}
+    )
+
+@app.delete("/api/contacts/{contact_id}")
+def api_delete_contact(contact_id: str):
+    delete_contact(contact_id)
+    return {"success": True}
+
+@app.delete("/api/contacts")
+def api_clear_contacts():
+    clear_all_contacts()
+    return {"success": True}
+

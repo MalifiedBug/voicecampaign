@@ -1,5 +1,5 @@
 """
-FarmCalling: Voice Calling & Scheduling Application powered by Vobiz.
+Voice Campaign: Voice Calling & Scheduling Application powered by Vobiz.
 Main Streamlit Application Entrypoint.
 """
 
@@ -9,7 +9,7 @@ import socket
 import uvicorn
 import logging
 
-from database import init_db, get_settings, get_call_stats, is_vobiz_env_configured
+from database import init_db, get_settings, get_call_stats, is_vobiz_env_configured, get_contacts_count
 from scheduler import get_scheduler, reload_all_schedules
 from server import app as fastapi_app
 
@@ -21,8 +21,8 @@ def is_port_in_use(port: int = 8000) -> bool:
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="FarmCalling | Vobiz Voice Automation",
-    page_icon="🌾",
+    page_title="Voice Campaign | Vobiz Voice Automation",
+    page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -38,7 +38,7 @@ def ensure_background_services():
         def start_uvicorn():
             uvicorn.run(fastapi_app, host="0.0.0.0", port=8000, log_level="warning")
 
-        server_thread = threading.Thread(target=start_uvicorn, daemon=True, name="FarmCallingFastAPIServer")
+        server_thread = threading.Thread(target=start_uvicorn, daemon=True, name="VoiceCampaignFastAPIServer")
         server_thread.start()
 
     # Initialize Scheduler and load active jobs
@@ -52,6 +52,7 @@ ensure_background_services()
 # 3. Modern Multipage Navigation (Streamlit >= 1.36)
 dashboard = st.Page("pages/1_dashboard.py", title="Operations Dashboard", icon="📊", default=True)
 schedules_page = st.Page("pages/2_schedules.py", title="Schedules & Campaigns", icon="⏱️")
+contacts_page = st.Page("pages/6_contacts.py", title="Contacts & Audience", icon="👥")
 audio_page = st.Page("pages/3_audio_studio.py", title="Audio Studio & Library", icon="🎙️")
 history_page = st.Page("pages/4_call_history.py", title="Call History (CDR)", icon="📋")
 settings_page = st.Page("pages/5_settings.py", title="Settings & Vobiz API", icon="⚙️")
@@ -59,14 +60,14 @@ settings_page = st.Page("pages/5_settings.py", title="Settings & Vobiz API", ico
 pg = st.navigation(
     {
         "Overview": [dashboard],
-        "Telephony Engine": [schedules_page, audio_page, history_page],
+        "Telephony Engine": [schedules_page, contacts_page, audio_page, history_page],
         "Configuration": [settings_page]
     }
 )
 
 # 4. Sidebar Branding & System Telemetry
 with st.sidebar:
-    st.markdown("## 🌾 **FarmCalling**")
+    st.markdown("## 🎙️ **Voice Campaign**")
     st.caption("Automated Outbound Voice Platform powered by **Vobiz API**")
     st.markdown("---")
 
@@ -78,6 +79,10 @@ with st.sidebar:
         st.markdown("🖥️ **Server:** `🟢 Running (Port 8000)`")
     else:
         st.markdown("🖥️ **Server:** `🔴 Stopped`")
+
+    # Contacts count badge
+    c_count = get_contacts_count()
+    st.markdown(f"👥 **Contacts Directory:** `{c_count}` contacts")
 
     # Vobiz Credentials Status
     if configured:

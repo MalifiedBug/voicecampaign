@@ -16,8 +16,11 @@ from database import (
     get_effective_audio_id,
     update_schedule_status,
     delete_schedule,
-    get_settings
+    get_settings,
+    get_contacts,
+    bulk_create_contacts
 )
+from vcf_parser import parse_vcf_bytes
 from scheduler import register_schedule_job, execute_call_job
 
 st.title("⏱️ Automated Call Scheduling")
@@ -79,13 +82,59 @@ else:
 
 # Section 1: Create New Schedule
 with st.expander("➕ Create New Call Schedule", expanded=True):
+    # Audience & .vcf Loader Tool
+    with st.expander("👥 Import Recipients from .vcf File or Contacts Directory", expanded=False):
+        col_vcf, col_book = st.columns(2)
+        with col_vcf:
+            st.markdown("##### 📁 Quick .vcf Uploader")
+            quick_vcf = st.file_uploader(
+                "Upload .vcf to populate campaign recipients",
+                type=["vcf", "vcard"],
+                key="sched_quick_vcf",
+                help="Bulk parses contacts and automatically enters them into the campaign form"
+            )
+            if quick_vcf is not None:
+                parsed_c = parse_vcf_bytes(quick_vcf.read())
+                if parsed_c:
+                    bulk_create_contacts(parsed_c)
+                    vobiz_bulk = "<".join([c["phone"] for c in parsed_c])
+                    st.session_state["campaign_target_numbers"] = vobiz_bulk
+                    st.session_state["campaign_default_name"] = f"Campaign ({quick_vcf.name})"
+                    st.success(f"✅ Loaded {len(parsed_c)} recipient(s) from `{quick_vcf.name}`!")
+                    st.rerun()
+                else:
+                    st.error("No valid phone numbers found in this .vcf.")
+        with col_book:
+            st.markdown("##### 📇 Pick from Contacts Directory")
+            all_c = get_contacts(limit=500)
+            if not all_c:
+                st.caption("No contacts saved yet. Upload a .vcf file or add contacts in the Contacts page.")
+            else:
+                contact_opts = {f"{c['name']} ({c['phone']})": c['phone'] for c in all_c}
+                sel_contacts = st.multiselect("Select Contact(s)", list(contact_opts.keys()), key="sched_contact_pick")
+                col_sel1, col_sel2 = st.columns(2)
+                with col_sel1:
+                    if st.button("Apply Selected Contacts", use_container_width=True):
+                        if sel_contacts:
+                            st.session_state["campaign_target_numbers"] = "<".join([contact_opts[k] for k in sel_contacts])
+                            st.rerun()
+                with col_sel2:
+                    if st.button(f"Select ALL ({len(all_c)}) Contacts", use_container_width=True):
+                        st.session_state["campaign_target_numbers"] = "<".join([c["phone"] for c in all_c])
+                        st.rerun()
+
+    # Pre-fill target numbers and name if passed from Contacts or .vcf uploader
+    default_to = st.session_state.pop("campaign_target_numbers", "")
+    default_name = st.session_state.pop("campaign_default_name", "")
+
     with st.form("new_schedule_form"):
         col_name, col_phone = st.columns([1, 1])
         with col_name:
-            schedule_name = st.text_input("Campaign / Schedule Name", placeholder="e.g. Morning Crop Irrigation Reminder")
+            schedule_name = st.text_input("Campaign / Schedule Name", value=default_name, placeholder="e.g. Morning Crop Irrigation Reminder")
         with col_phone:
             to_number = st.text_input(
                 "Recipient Phone Number(s)",
+                value=default_to,
                 placeholder="+919876543210 (or separate multiple with <)",
                 help="Vobiz accepts single E.164 numbers or bulk destinations separated by '<' (e.g. +919876543210<+919876543211)"
             )

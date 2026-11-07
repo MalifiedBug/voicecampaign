@@ -16,6 +16,8 @@ from database import (
     get_env_managed_keys,
     get_db_mode,
     is_postgres,
+    get_database_url,
+    get_contacts_count,
     db_execute,
     get_schedules,
     get_audio_assets
@@ -139,7 +141,7 @@ with tab_app:
     st.markdown("A Vobiz Application binds your `answer_url` and `hangup_url` into a reusable app ID on the Vobiz network.")
 
     curr_app_id = current_settings.get("app_id", "")
-    curr_app_name = current_settings.get("app_name", "FarmCalling-Voice-App")
+    curr_app_name = current_settings.get("app_name", "Voice-Campaign-App")
     base_url = current_settings.get("webhook_base_url", "").rstrip("/")
 
     col_app1, col_app2 = st.columns(2)
@@ -366,9 +368,10 @@ with tab_db:
         st.warning("🟡 **Active Mode: SQLite (Local/Ephemeral)**")
         st.caption("Using local SQLite storage. Configure `DATABASE_URL` in environment variables or secrets to activate Supabase.")
 
+    active_host = (get_database_url() or "").split("@")[-1] if is_pg else "data/voicecampaign.db"
     c_host, c_bucket, c_stat = st.columns(3)
     with c_host:
-        st.metric("Database Host", "Supabase PostgreSQL", help="db.cvralbaxzcirpdnhgyus.supabase.co:5432")
+        st.metric("Database Host", "Supabase PostgreSQL" if is_pg else "SQLite", help=active_host)
     with c_bucket:
         st.metric("Storage Bucket", "farmcalling-audio", help="Supabase Public Audio Storage Bucket")
     with c_stat:
@@ -382,10 +385,11 @@ with tab_db:
         audio_cnt = len(get_audio_assets())
         call_row = db_execute("SELECT count(*) as c FROM call_logs", fetch="one")
         call_cnt = call_row["c"] if call_row else 0
+        contacts_cnt = get_contacts_count()
         sett_row = db_execute("SELECT count(*) as c FROM settings", fetch="one")
         sett_cnt = sett_row["c"] if sett_row else 0
 
-        t1, t2, t3, t4 = st.columns(4)
+        t1, t2, t3, t4, t5 = st.columns(5)
         with t1:
             st.metric("Campaign Schedules", schedules_cnt)
         with t2:
@@ -393,6 +397,8 @@ with tab_db:
         with t3:
             st.metric("Call Logs (CDR)", call_cnt)
         with t4:
+            st.metric("Audience Contacts", contacts_cnt)
+        with t5:
             st.metric("Configuration Keys", sett_cnt)
     except Exception as ex:
         st.error(f"Error querying table telemetry: {ex}")

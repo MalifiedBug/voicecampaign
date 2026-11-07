@@ -1,5 +1,5 @@
 """
-Database module for FarmCalling Vobiz Application.
+Database module for Voice Campaign Vobiz Application.
 Supports Supabase PostgreSQL (persistent storage for data and audio media)
 with automatic fallback to SQLite for offline local development and testing.
 """
@@ -74,16 +74,14 @@ ENV_SETTING_MAPPINGS = {
 }
 
 # Production Supabase PostgreSQL Connection Strings
-# 1. Supabase IPv4 Connection Pooler (required for Vercel Serverless / AWS Lambda which lack IPv6 egress)
-SUPABASE_POOLER_URL = "postgresql://postgres.cvralbaxzcirpdnhgyus:X%23%3FS%268%21HGFP%21vH9@aws-0-ap-southeast-2.pooler.supabase.com:5432/postgres"
-# 2. Supabase Direct Host (dual-stack IPv6)
-SUPABASE_DIRECT_URL = "postgresql://postgres:X%23%3FS%268%21HGFP%21vH9@db.cvralbaxzcirpdnhgyus.supabase.co:5432/postgres"
+SUPABASE_DIRECT_URL = "postgresql://postgres:X#?S&8!HGFP!vH9@db.oyqcsfdzlbldrmykoosq.supabase.co:5432/postgres"
+SUPABASE_POOLER_URL = SUPABASE_DIRECT_URL
 
 DEFAULT_SUPABASE_URL = (
     os.environ.get("DATABASE_URL")
     or os.environ.get("SUPABASE_DB_URL")
     or os.environ.get("POSTGRES_URL")
-    or SUPABASE_POOLER_URL
+    or SUPABASE_DIRECT_URL
 )
 
 def get_env_override(key: str) -> Optional[str]:
@@ -168,16 +166,24 @@ def get_db_mode() -> str:
 
     configured_url = get_database_url()
     if configured_url and psycopg2 is not None and (configured_url.startswith("postgres://") or configured_url.startswith("postgresql://")):
-        # Candidate URLs to attempt: configured URL first, then IPv4 pooler, then direct
-        candidates = [configured_url]
-        if SUPABASE_POOLER_URL not in candidates:
-            candidates.append(SUPABASE_POOLER_URL)
-        if SUPABASE_DIRECT_URL not in candidates:
-            candidates.append(SUPABASE_DIRECT_URL)
+        enc_url = None
+        try:
+            import urllib.parse
+            prefix = "postgresql://" if configured_url.startswith("postgresql://") else "postgres://"
+            rest = configured_url[len(prefix):]
+            if "@" in rest and ":" in rest.split("@")[0]:
+                user_pass, host_part = rest.split("@", 1)
+                user, pwd = user_pass.split(":", 1)
+                encoded_pwd = urllib.parse.quote(urllib.parse.unquote(pwd), safe="")
+                enc_url = f"{prefix}{user}:{encoded_pwd}@{host_part}"
+        except Exception:
+            pass
+
+        candidates = [enc_url, configured_url] if enc_url else [configured_url]
 
         for candidate in candidates:
             try:
-                test_conn = psycopg2.connect(candidate, connect_timeout=7)
+                test_conn = psycopg2.connect(candidate, connect_timeout=6)
                 test_conn.autocommit = True
                 _pg_conn = test_conn
                 _active_pg_url = candidate
@@ -209,13 +215,27 @@ def get_pg_conn():
                 pass
             _pg_conn = None
 
-    url = _active_pg_url or get_database_url() or SUPABASE_POOLER_URL
-    candidates = [url, SUPABASE_POOLER_URL, SUPABASE_DIRECT_URL]
+    url = _active_pg_url or get_database_url() or SUPABASE_DIRECT_URL
+    enc_url = None
+    try:
+        import urllib.parse
+        prefix = "postgresql://" if url.startswith("postgresql://") else "postgres://"
+        rest = url[len(prefix):]
+        if "@" in rest and ":" in rest.split("@")[0]:
+            user_pass, host_part = rest.split("@", 1)
+            user, pwd = user_pass.split(":", 1)
+            encoded_pwd = urllib.parse.quote(urllib.parse.unquote(pwd), safe="")
+            enc_url = f"{prefix}{user}:{encoded_pwd}@{host_part}"
+    except Exception:
+        pass
+
+    candidates = [enc_url, url] if enc_url else [url]
+
     for cand in candidates:
         if not cand:
             continue
         try:
-            conn = psycopg2.connect(cand, connect_timeout=8)
+            conn = psycopg2.connect(cand, connect_timeout=6)
             conn.autocommit = True
             _pg_conn = conn
             _active_pg_url = cand
@@ -227,8 +247,12 @@ def get_pg_conn():
 
 def get_db_path() -> str:
     if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
-        return "/tmp/farmcalling.db"
-    return os.path.join(os.path.dirname(__file__), "data", "farmcalling.db")
+        return "/tmp/voicecampaign.db"
+    vc_path = os.path.join(os.path.dirname(__file__), "data", "voicecampaign.db")
+    legacy_path = os.path.join(os.path.dirname(__file__), "data", "farmcalling.db")
+    if not os.path.exists(vc_path) and os.path.exists(legacy_path):
+        return legacy_path
+    return vc_path
 
 def get_sqlite_conn() -> sqlite3.Connection:
     """Returns local SQLite connection with Row factory."""
@@ -371,6 +395,25 @@ def init_db():
                 xml_rendered TEXT
             );
             """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_uuid ON call_logs(call_uuid);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_time ON call_logs(initiated_at);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_to ON call_logs(to_number);")
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                email TEXT,
+                organization TEXT,
+                notes TEXT,
+                group_tag TEXT,
+                source TEXT DEFAULT 'manual',
+                created_at TEXT NOT NULL
+            );
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);")
 
             # Ensure Supabase storage bucket exists
             try:
@@ -476,6 +519,25 @@ def init_db():
                 xml_rendered TEXT
             );
             """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_uuid ON call_logs(call_uuid);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_time ON call_logs(initiated_at);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_call_logs_to ON call_logs(to_number);")
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                email TEXT,
+                organization TEXT,
+                notes TEXT,
+                group_tag TEXT,
+                source TEXT DEFAULT 'manual',
+                created_at TEXT NOT NULL
+            );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);")
         conn.close()
 
     # Seed default settings
@@ -484,7 +546,7 @@ def init_db():
         "auth_token": get_env_override("auth_token") or "",
         "caller_id": get_env_override("caller_id") or "",
         "app_id": get_env_override("app_id") or "",
-        "app_name": get_env_override("app_name") or "FarmCalling-Vobiz-App",
+        "app_name": get_env_override("app_name") or "Voice-Campaign-App",
         "webhook_base_url": get_env_override("webhook_base_url") or "",
         "ring_timeout": get_env_override("ring_timeout") or "30",
         "time_limit": get_env_override("time_limit") or "3600",
@@ -914,6 +976,15 @@ def update_call_log(
         sql = f"UPDATE call_logs SET {', '.join(updates)} WHERE id = ?"
         db_execute(sql, tuple(params))
 
+def get_call_log_by_uuid(call_uuid: str) -> Optional[Dict[str, Any]]:
+    if not call_uuid:
+        return None
+    return db_execute("""
+        SELECT * FROM call_logs
+        WHERE call_uuid = ? OR vobiz_api_id = ?
+        ORDER BY initiated_at DESC LIMIT 1
+    """, (call_uuid.strip(), call_uuid.strip()), fetch="one")
+
 def update_call_log_by_uuid(
     call_uuid: str,
     status: Optional[str] = None,
@@ -921,33 +992,43 @@ def update_call_log_by_uuid(
     ended_at: Optional[str] = None,
     duration: Optional[int] = None,
     hangup_cause: Optional[str] = None,
-    notes: Optional[str] = None
+    notes: Optional[str] = None,
+    to_number: Optional[str] = None,
+    from_number: Optional[str] = None,
+    request_uuid: Optional[str] = None
 ):
-    updates = []
-    params = []
-    if status is not None:
-        updates.append("status = ?")
-        params.append(status)
-    if answered_at is not None:
-        updates.append("answered_at = ?")
-        params.append(answered_at)
-    if ended_at is not None:
-        updates.append("ended_at = ?")
-        params.append(ended_at)
-    if duration is not None:
-        updates.append("duration = ?")
-        params.append(duration)
-    if hangup_cause is not None:
-        updates.append("hangup_cause = ?")
-        params.append(hangup_cause)
-    if notes is not None:
-        updates.append("notes = ?")
-        params.append(notes)
+    if not call_uuid and not request_uuid:
+        return
 
-    if updates:
-        params.append(call_uuid)
-        sql = f"UPDATE call_logs SET {', '.join(updates)} WHERE call_uuid = ?"
-        db_execute(sql, tuple(params))
+    # Check if record exists in database
+    target_uuid = call_uuid or request_uuid
+    existing = get_call_log_by_uuid(target_uuid)
+    if not existing and request_uuid and request_uuid != call_uuid:
+        existing = get_call_log_by_uuid(request_uuid)
+
+    if existing:
+        log_id = existing["id"]
+        update_call_log(
+            log_id=log_id,
+            status=status,
+            call_uuid=call_uuid or existing.get("call_uuid"),
+            answered_at=answered_at,
+            ended_at=ended_at,
+            duration=duration,
+            hangup_cause=hangup_cause,
+            notes=notes
+        )
+    else:
+        # Guarantee every single call is stored into PostgreSQL call_logs
+        now = datetime.now().isoformat()
+        create_call_log(
+            to_number=to_number or "Incoming/Direct",
+            from_number=from_number or "Vobiz",
+            call_uuid=call_uuid,
+            vobiz_api_id=request_uuid,
+            status=status or "completed",
+            notes=notes or f"Auto-captured ({hangup_cause or 'Call Ended'})"
+        )
 
 def get_call_logs(limit: int = 100) -> List[Dict[str, Any]]:
     return db_execute("SELECT * FROM call_logs ORDER BY initiated_at DESC LIMIT ?", (limit,), fetch="all") or []
@@ -975,6 +1056,168 @@ def get_call_stats() -> Dict[str, Any]:
         "total_duration_sec": total_duration,
         "active_schedules": active_schedules
     }
+
+# --- Contacts Helpers ---
+
+def create_contact(
+    name: str,
+    phone: str,
+    email: Optional[str] = None,
+    organization: Optional[str] = None,
+    notes: Optional[str] = None,
+    group_tag: Optional[str] = "Default",
+    source: str = "manual"
+) -> str:
+    contact_id = str(uuid.uuid4())
+    now = datetime.now().isoformat()
+    db_execute("""
+        INSERT INTO contacts (
+            id, name, phone, email, organization, notes, group_tag, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        contact_id, name.strip(), phone.strip(),
+        (email or "").strip() or None,
+        (organization or "").strip() or None,
+        (notes or "").strip() or None,
+        (group_tag or "Default").strip(),
+        source,
+        now
+    ))
+    return contact_id
+
+def bulk_create_contacts(
+    contacts_list: List[Dict[str, Any]],
+    update_duplicates: bool = True
+) -> Dict[str, int]:
+    """
+    Bulk inserts a list of contacts with deduplication by phone number.
+    Returns summary: {"total": int, "added": int, "updated": int, "skipped": int}
+    """
+    added = 0
+    updated = 0
+    skipped = 0
+    now = datetime.now().isoformat()
+
+    for c in contacts_list:
+        phone = str(c.get("phone", "")).strip()
+        if not phone:
+            skipped += 1
+            continue
+
+        name = str(c.get("name", "")).strip() or phone
+        email = str(c.get("email", "")).strip() or None
+        org = str(c.get("organization", "")).strip() or None
+        notes = str(c.get("notes", "")).strip() or None
+        group_tag = str(c.get("group_tag", "Imported")).strip() or "Imported"
+        source = str(c.get("source", "vcf")).strip()
+
+        # Check existing contact by phone
+        existing = get_contact_by_phone(phone)
+        if existing:
+            if update_duplicates:
+                upd_fields = []
+                params = []
+                if name and name != phone and (not existing.get("name") or existing.get("name") == phone):
+                    upd_fields.append("name = ?")
+                    params.append(name)
+                if email and not existing.get("email"):
+                    upd_fields.append("email = ?")
+                    params.append(email)
+                if org and not existing.get("organization"):
+                    upd_fields.append("organization = ?")
+                    params.append(org)
+                if group_tag and group_tag != existing.get("group_tag"):
+                    upd_fields.append("group_tag = ?")
+                    params.append(group_tag)
+
+                if upd_fields:
+                    params.append(existing["id"])
+                    db_execute(f"UPDATE contacts SET {', '.join(upd_fields)} WHERE id = ?", tuple(params))
+                    updated += 1
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+        else:
+            cid = str(uuid.uuid4())
+            db_execute("""
+                INSERT INTO contacts (
+                    id, name, phone, email, organization, notes, group_tag, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (cid, name, phone, email, org, notes, group_tag, source, now))
+            added += 1
+
+    return {"total": len(contacts_list), "added": added, "updated": updated, "skipped": skipped}
+
+def get_contacts(
+    search_query: Optional[str] = None,
+    group_filter: Optional[str] = None,
+    limit: int = 2000
+) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM contacts"
+    clauses = []
+    params = []
+
+    if group_filter and group_filter != "All":
+        clauses.append("group_tag = ?")
+        params.append(group_filter)
+
+    if search_query and search_query.strip():
+        q = f"%{search_query.strip().lower()}%"
+        clauses.append("(LOWER(name) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(organization) LIKE ? OR LOWER(email) LIKE ?)")
+        params.extend([q, q, q, q])
+
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    return db_execute(sql, tuple(params), fetch="all") or []
+
+def get_contact(contact_id: str) -> Optional[Dict[str, Any]]:
+    return db_execute("SELECT * FROM contacts WHERE id = ? LIMIT 1", (contact_id,), fetch="one")
+
+def get_contact_by_phone(phone: str) -> Optional[Dict[str, Any]]:
+    return db_execute("SELECT * FROM contacts WHERE phone = ? LIMIT 1", (phone.strip(),), fetch="one")
+
+def update_contact(contact_id: str, fields: Dict[str, Any]) -> bool:
+    allowed = ["name", "phone", "email", "organization", "notes", "group_tag"]
+    updates = []
+    params = []
+    for k, v in fields.items():
+        if k in allowed:
+            updates.append(f"{k} = ?")
+            params.append(v)
+    if not updates:
+        return False
+    params.append(contact_id)
+    db_execute(f"UPDATE contacts SET {', '.join(updates)} WHERE id = ?", tuple(params))
+    return True
+
+def delete_contact(contact_id: str) -> bool:
+    db_execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+    return True
+
+def delete_contacts(contact_ids: List[str]) -> int:
+    if not contact_ids:
+        return 0
+    placeholders = ", ".join(["?"] * len(contact_ids))
+    db_execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", tuple(contact_ids))
+    return len(contact_ids)
+
+def clear_all_contacts() -> bool:
+    db_execute("DELETE FROM contacts")
+    return True
+
+def get_contacts_count() -> int:
+    row = db_execute("SELECT COUNT(*) as c FROM contacts", fetch="one")
+    return row["c"] if row else 0
+
+def get_contact_groups() -> List[str]:
+    rows = db_execute("SELECT DISTINCT group_tag FROM contacts WHERE group_tag IS NOT NULL AND group_tag != ''", fetch="all") or []
+    groups = [r["group_tag"] for r in rows if r.get("group_tag")]
+    return sorted(list(set(groups)))
 
 # Initialize database schema on startup
 init_db()
