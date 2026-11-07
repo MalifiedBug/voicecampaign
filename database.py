@@ -349,9 +349,13 @@ def init_db():
                 tts_voice TEXT,
                 audio_bytes BYTEA,
                 external_url TEXT,
+                storage_url TEXT,
+                s3_key TEXT,
                 created_at TEXT NOT NULL
             );
             """)
+            cur.execute("ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS s3_key TEXT;")
+            cur.execute("ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS storage_url TEXT;")
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -474,6 +478,14 @@ def init_db():
                 pass
             try:
                 conn.execute("ALTER TABLE audio_assets ADD COLUMN external_url TEXT;")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE audio_assets ADD COLUMN storage_url TEXT;")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE audio_assets ADD COLUMN s3_key TEXT;")
             except Exception:
                 pass
 
@@ -664,24 +676,26 @@ def add_audio_asset(
     tts_text: Optional[str] = None,
     tts_voice: Optional[str] = None,
     audio_bytes: Optional[bytes] = None,
-    external_url: Optional[str] = None
+    external_url: Optional[str] = None,
+    s3_key: Optional[str] = None
 ) -> str:
-    """Stores audio asset metadata and binary content in persistent Supabase PostgreSQL."""
+    """Stores audio asset metadata and S3 reference in persistent Supabase PostgreSQL."""
     asset_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
-    if not external_url:
-        external_url = f"https://oyqcsfdzlbldrmykoosq.supabase.co/storage/v1/object/public/farmcalling-audio/{filename}"
+    clean_s3_key = s3_key or (filename if source_type != "tts" else None)
+    if not external_url and clean_s3_key:
+        external_url = f"https://oyqcsfdzlbldrmykoosq.supabase.co/storage/v1/object/public/farmcalling-audio/{clean_s3_key}"
 
     db_execute("""
         INSERT INTO audio_assets (
             id, name, filename, filepath, mime_type, source_type,
             duration_seconds, file_size_bytes, tts_text, tts_voice,
-            audio_bytes, external_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            audio_bytes, external_url, storage_url, s3_key, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         asset_id, name, filename, filepath, mime_type, source_type,
         duration_seconds, file_size_bytes, tts_text, tts_voice,
-        audio_bytes, external_url, now
+        audio_bytes, external_url, external_url, clean_s3_key, now
     ))
     # Automatically set newly uploaded/recorded audio as the system default audio in Supabase
     if source_type in ("upload", "recorded") and not name.startswith("Test "):
@@ -696,11 +710,13 @@ def get_audio_assets(include_test_stubs: bool = False) -> List[Dict[str, Any]]:
     """Returns list of audible audio assets from Supabase PostgreSQL."""
     base_filter = "WHERE id NOT IN ('test1-sample-id', 'farm-alert-sample-id') AND filename NOT IN ('test1.wav', 'farm_alert.wav')"
     if not include_test_stubs:
-        base_filter += " AND (source_type = 'tts' OR file_size_bytes > 0 OR audio_bytes IS NOT NULL)"
+        base_filter += " AND (source_type = 'tts' OR file_size_bytes > 0 OR audio_bytes IS NOT NULL OR external_url IS NOT NULL OR s3_key IS NOT NULL)"
     return db_execute(f"""
         SELECT id, name, filename, filepath, mime_type, source_type,
                duration_seconds, file_size_bytes, tts_text, tts_voice,
-               external_url, (audio_bytes IS NOT NULL) AS has_audio_bytes, created_at
+               external_url, storage_url, s3_key,
+               (audio_bytes IS NOT NULL OR s3_key IS NOT NULL OR external_url IS NOT NULL) AS has_audio_bytes,
+               created_at
         FROM audio_assets
         {base_filter}
         ORDER BY created_at DESC
@@ -724,18 +740,60 @@ def get_audio_asset(asset_id: str) -> Optional[Dict[str, Any]]:
     """, (clean, base, clean, f"{base}.wav", clean), fetch="one")
 
 def get_audio_bytes(asset_id: str) -> Optional[bytes]:
-    """Retrieves only the raw audio bytes for an asset directly from Supabase PostgreSQL."""
+    """
+    Retrieves raw audio bytes for an asset.
+    Checks:
+    1. In-memory/DB audio_bytes
+    2. Supabase Storage S3 (via s3_storage)
+    3. Direct public CDN fetch
+    4. Local disk filepath
+    """
     asset = get_audio_asset(asset_id)
-    return asset.get("audio_bytes") if asset else None
+    if not asset:
+        return None
+
+    b = asset.get("audio_bytes")
+    if b and len(b) > 0:
+        return b
+
+    s3_key = asset.get("s3_key") or asset.get("filename")
+    if s3_key and asset.get("source_type") != "tts":
+        try:
+            import s3_storage
+            s3_data = s3_storage.get_audio_from_s3(s3_key)
+            if s3_data and len(s3_data) > 0:
+                return s3_data
+        except Exception as e:
+            logger.warning(f"Failed to fetch {s3_key} from S3: {e}")
+
+    ext_url = asset.get("external_url") or asset.get("storage_url")
+    if ext_url and ext_url.startswith("http"):
+        try:
+            import requests
+            r = requests.get(ext_url, timeout=6)
+            if r.status_code == 200 and len(r.content) > 0:
+                return r.content
+        except Exception as e:
+            logger.warning(f"Failed to fetch {ext_url} via HTTP: {e}")
+
+    fp = asset.get("filepath")
+    if fp and os.path.exists(fp):
+        try:
+            with open(fp, "rb") as f:
+                return f.read()
+        except Exception:
+            pass
+
+    return None
 
 def get_latest_custom_audio_id() -> Optional[str]:
     """
     Returns the ID of the most recently uploaded or recorded custom audio asset
-    persisted in Supabase PostgreSQL.
+    persisted in Supabase PostgreSQL or S3.
     """
     row = db_execute("""
         SELECT id FROM audio_assets
-        WHERE (audio_bytes IS NOT NULL OR file_size_bytes > 0 OR source_type = 'tts')
+        WHERE (audio_bytes IS NOT NULL OR file_size_bytes > 0 OR source_type = 'tts' OR s3_key IS NOT NULL OR external_url IS NOT NULL)
           AND id NOT IN ('test1-sample-id', 'farm-alert-sample-id')
         ORDER BY created_at DESC
         LIMIT 1
@@ -781,6 +839,16 @@ def delete_audio_asset(asset_id: str) -> bool:
             os.remove(fp)
         except Exception:
             pass
+
+    # Delete from Supabase Storage S3
+    s3_key = asset.get("s3_key") or asset.get("filename")
+    if s3_key and asset.get("source_type") != "tts":
+        try:
+            import s3_storage
+            s3_storage.delete_audio_from_s3(s3_key)
+        except Exception as e:
+            logger.warning(f"Could not delete {s3_key} from S3: {e}")
+
     db_execute("DELETE FROM audio_assets WHERE id = ?", (asset["id"],))
     # If the deleted asset was the default_audio_id, update to latest custom or empty
     settings = get_settings()

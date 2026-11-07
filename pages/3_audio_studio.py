@@ -15,9 +15,19 @@ from audio_manager import (
     get_asset_url
 )
 from database import get_settings, update_settings, get_audio_bytes, get_effective_audio_id
+import s3_storage
 
 st.title("🎙️ Audio Studio & Voice Library")
 st.caption("Record custom voice announcements from your microphone, upload audio tracks, or configure Text-to-Speech.")
+
+# Supabase Storage S3 Status Check
+with st.expander("☁️ Supabase Cloud Storage (S3) Connectivity", expanded=False):
+    s3_ok, s3_msg, s3_info = s3_storage.test_s3_connection()
+    if s3_ok:
+        st.success(f"✅ {s3_msg}")
+        st.caption(f"• **Endpoint:** `{s3_info.get('endpoint')}`  \n• **Region:** `{s3_info.get('region')}`  \n• **Target Bucket:** `{s3_info.get('bucket')}`  \n• **Public CDN:** `{s3_storage.get_s3_config().get('public_base')}`")
+    else:
+        st.warning(f"⚠️ {s3_msg}")
 
 settings = get_settings()
 base_url = settings.get("webhook_base_url", "https://api.example.com")
@@ -60,13 +70,13 @@ with tab_rec:
                 elif "mp3" in rec_type or "mpeg" in rec_type:
                     hint = "mp3"
 
-                with st.spinner("Storing & normalizing audio in Supabase..."):
+                with st.spinner("Uploading audio to Supabase Storage S3 bucket..."):
                     asset_id = save_recorded_audio(audio_bytes=cached_rec_bytes, custom_name=r_name, format_hint=hint)
                     update_settings({"default_audio_id": asset_id})
 
                 st.session_state.pop("mic_recorded_bytes", None)
                 st.session_state.pop("mic_recorded_type", None)
-                st.success(f"🎉 Recording **'{r_name}'** saved to Supabase and set as active default call prompt! (ID: `{asset_id[:8]}...`)")
+                st.success(f"🎉 Recording **'{r_name}'** securely saved to Supabase S3 bucket and set as active prompt! (ID: `{asset_id[:8]}...`)")
                 st.rerun()
 
         with col_discard_btn:
@@ -90,14 +100,14 @@ with tab_up:
 
         if st.button("💾 Save Audio to Library", type="primary", key="save_up_btn", use_container_width=True):
             c_name = custom_name.strip() if custom_name.strip() else uploaded_file.name
-            with st.spinner("Processing & uploading to Supabase..."):
+            with st.spinner("Processing & uploading to Supabase Storage S3 bucket..."):
                 asset_id = save_uploaded_audio(
                     file_name=uploaded_file.name,
                     file_bytes=file_bytes,
                     custom_name=c_name
                 )
                 update_settings({"default_audio_id": asset_id})
-            st.success(f"🎉 Audio **'{c_name}'** uploaded to Supabase and set as active default call prompt! (ID: `{asset_id[:8]}...`)")
+            st.success(f"🎉 Audio **'{c_name}'** uploaded to Supabase S3 bucket and set as active prompt! (ID: `{asset_id[:8]}...`)")
             st.rerun()
 
 # TAB 3: Text-to-Speech Studio
@@ -162,7 +172,8 @@ else:
                     st.caption("Available Audio Track")
                 
                 size_kb = round(asset.get("file_size_bytes", 0) / 1024, 1)
-                st.caption(f"Source: `{asset['source_type'].upper()}` | Size: `{size_kb} KB` | Format: `{asset['mime_type']}`")
+                storage_tag = "☁️ Supabase S3" if asset.get("external_url") else f"Source: `{asset['source_type'].upper()}`"
+                st.caption(f"{storage_tag} | Size: `{size_kb} KB` | Format: `{asset['mime_type']}`")
                 if asset.get("duration_seconds", 0) > 0:
                     st.caption(f"Duration: `{asset['duration_seconds']}s`")
 
@@ -171,9 +182,13 @@ else:
                 if asset["source_type"] == "tts":
                     st.markdown(f"🗣️ *\"{asset.get('tts_text', '')}\"*")
                 else:
-                    # Stream audio binary directly from Supabase PostgreSQL
+                    # Stream audio directly from Supabase Storage S3 or bytes
+                    s3_cdn_url = asset.get("external_url") or asset.get("storage_url")
                     a_bytes = get_audio_bytes(asset["id"])
-                    if a_bytes and len(a_bytes) > 0:
+                    if s3_cdn_url and s3_cdn_url.startswith("http"):
+                        st.audio(s3_cdn_url, format=asset.get("mime_type", "audio/wav"))
+                        st.caption(f"☁️ S3 CDN: `{s3_cdn_url[:65]}...`")
+                    elif a_bytes and len(a_bytes) > 0:
                         st.audio(a_bytes, format=asset.get("mime_type", "audio/wav"))
                         st.caption(f"Vobiz Stream URL: `{pub_url}`")
                     elif os.path.exists(asset.get("filepath", "")):

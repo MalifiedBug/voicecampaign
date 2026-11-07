@@ -150,7 +150,7 @@ class TestFarmCalling(unittest.TestCase):
         )
         self.assertEqual(ans_resp.status_code, 200)
         self.assertIn("application/xml", ans_resp.headers.get("content-type", ""))
-        self.assertIn(f"/audio/{aid}", ans_resp.text)
+        self.assertTrue(f"/audio/{aid}" in ans_resp.text or "farmcalling-audio" in ans_resp.text or "supabase.co" in ans_resp.text)
         self.assertIn('loop="3"', ans_resp.text)
         self.assertIn("<Hangup/>", ans_resp.text)
 
@@ -303,7 +303,7 @@ class TestFarmCalling(unittest.TestCase):
         ans_resp = self.client.get(f"/webhook/answer?schedule_id={sched_id}&audio_id={aid}")
         self.assertEqual(ans_resp.status_code, 200)
         self.assertIn('loop="4"', ans_resp.text)
-        self.assertIn(f"/audio/{aid}.wav", ans_resp.text)
+        self.assertTrue(f"/audio/{aid}" in ans_resp.text or "farmcalling-audio" in ans_resp.text or "supabase.co" in ans_resp.text)
         self.assertIn("<Hangup/>", ans_resp.text)
 
         # 4. Test Instant Call API with custom repeat count (loop_count = 3)

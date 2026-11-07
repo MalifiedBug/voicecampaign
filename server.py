@@ -215,6 +215,17 @@ def serve_audio(asset_id: str, request: Request):
     if asset:
         # 1a. If raw audio_bytes BLOB exists in DB, serve directly from memory
         raw_bytes = asset.get("audio_bytes")
+
+        # 1b. If not in DB, retrieve directly from Supabase Storage S3
+        if not raw_bytes or len(raw_bytes) == 0:
+            s3_key = asset.get("s3_key") or asset.get("filename")
+            if s3_key and asset.get("source_type") != "tts":
+                try:
+                    import s3_storage
+                    raw_bytes = s3_storage.get_audio_from_s3(s3_key)
+                except Exception as e:
+                    logger.warning(f"Could not load audio from S3 for {s3_key}: {e}")
+
         if raw_bytes and len(raw_bytes) > 0:
             if raw_bytes.startswith(b"RIFF"):
                 mime_type = "audio/wav"
@@ -233,7 +244,7 @@ def serve_audio(asset_id: str, request: Request):
 
             return make_byte_response(raw_bytes, mime_type, filename)
 
-        # 1b. If filepath on disk exists
+        # 1c. If filepath on disk exists
         fp = asset.get("filepath", "")
         if fp and os.path.exists(fp):
             try:
@@ -390,7 +401,10 @@ async def answer_webhook(
                             ext = ".wav"
                         elif raw.startswith(b"ID3") or (len(raw) > 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
                             ext = ".mp3"
-                if clean_aid.endswith(".wav") or clean_aid.endswith(".mp3"):
+                s3_url = asset.get("external_url") or asset.get("storage_url") if asset else None
+                if s3_url and s3_url.startswith("http"):
+                    audio_public_url = s3_url
+                elif clean_aid.endswith(".wav") or clean_aid.endswith(".mp3"):
                     audio_public_url = f"{base_url}/audio/{clean_aid}"
                 else:
                     audio_public_url = f"{base_url}/audio/{clean_aid}{ext}"
@@ -403,7 +417,11 @@ async def answer_webhook(
             voice = eff_asset.get("tts_voice") or "WOMAN"
             xml_content = VobizClient.generate_speak_xml(eff_asset["tts_text"], voice=voice, loop=target_loop)
         elif eff_id:
-            audio_public_url = f"{base_url}/audio/{eff_id}.wav"
+            s3_url = eff_asset.get("external_url") or eff_asset.get("storage_url") if eff_asset else None
+            if s3_url and s3_url.startswith("http"):
+                audio_public_url = s3_url
+            else:
+                audio_public_url = f"{base_url}/audio/{eff_id}.wav"
             xml_content = VobizClient.generate_play_xml(audio_public_url, loop=target_loop)
         else:
             xml_content = VobizClient.generate_speak_xml("Hello, this is Voice Campaign. Your automated call is connected.", voice="WOMAN", loop=1)

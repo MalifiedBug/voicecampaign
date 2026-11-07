@@ -12,6 +12,7 @@ import logging
 from typing import Optional, Dict, Any, Tuple
 import numpy as np
 from database import add_audio_asset, get_audio_asset, get_audio_assets, delete_audio_asset
+import s3_storage
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,7 @@ def detect_and_normalize_audio(file_name: str, file_bytes: bytes) -> Tuple[str, 
 def save_uploaded_audio(file_name: str, file_bytes: bytes, custom_name: Optional[str] = None) -> str:
     """
     Saves an uploaded audio file (MP3/WAV) to the audio directory and registers it in database.
+    Uploads directly to Supabase Storage S3 for persistent cloud durability.
     Automatically normalizes WAV files to 16kHz mono 16-bit PCM.
     """
     ext, processed_bytes, mime_type, duration = detect_and_normalize_audio(file_name, file_bytes)
@@ -162,6 +164,13 @@ def save_uploaded_audio(file_name: str, file_bytes: bytes, custom_name: Optional
     except Exception as e:
         logger.warning(f"Could not write file to {filepath}: {e}")
 
+    # Upload to Supabase Storage S3
+    s3_success, s3_key, s3_pub_url = s3_storage.upload_audio_to_s3(
+        filename=unique_filename,
+        audio_bytes=processed_bytes,
+        mime_type=mime_type
+    )
+
     file_size = len(processed_bytes)
     display_name = custom_name.strip() if custom_name else os.path.splitext(file_name)[0]
 
@@ -173,14 +182,17 @@ def save_uploaded_audio(file_name: str, file_bytes: bytes, custom_name: Optional
         source_type="upload",
         duration_seconds=duration,
         file_size_bytes=file_size,
-        audio_bytes=processed_bytes
+        audio_bytes=processed_bytes,
+        external_url=s3_pub_url if s3_success else None,
+        s3_key=s3_key if s3_success else unique_filename
     )
-    logger.info(f"Saved uploaded audio: {unique_filename} (ID: {asset_id}, {mime_type}, {duration}s)")
+    logger.info(f"Saved uploaded audio: {unique_filename} (ID: {asset_id}, {mime_type}, {duration}s, S3: {s3_success})")
     return asset_id
 
 def save_recorded_audio(audio_bytes: bytes, custom_name: Optional[str] = None, format_hint: str = "wav") -> str:
     """
     Saves microphone-recorded audio to the audio directory and registers it.
+    Uploads directly to Supabase Storage S3 for persistent cloud durability.
     Automatically normalizes WAV files to 16kHz mono 16-bit PCM.
     """
     ext, processed_bytes, mime_type, duration = detect_and_normalize_audio(f"rec.{format_hint}", audio_bytes)
@@ -194,6 +206,13 @@ def save_recorded_audio(audio_bytes: bytes, custom_name: Optional[str] = None, f
     except Exception as e:
         logger.warning(f"Could not write file to {filepath}: {e}")
 
+    # Upload to Supabase Storage S3
+    s3_success, s3_key, s3_pub_url = s3_storage.upload_audio_to_s3(
+        filename=unique_filename,
+        audio_bytes=processed_bytes,
+        mime_type=mime_type
+    )
+
     file_size = len(processed_bytes)
     display_name = custom_name.strip() if custom_name else f"Recorded Audio {unique_filename[:8]}"
 
@@ -205,9 +224,11 @@ def save_recorded_audio(audio_bytes: bytes, custom_name: Optional[str] = None, f
         source_type="recorded",
         duration_seconds=duration,
         file_size_bytes=file_size,
-        audio_bytes=processed_bytes
+        audio_bytes=processed_bytes,
+        external_url=s3_pub_url if s3_success else None,
+        s3_key=s3_key if s3_success else unique_filename
     )
-    logger.info(f"Saved recorded audio: {unique_filename} (ID: {asset_id}, {mime_type}, {duration}s)")
+    logger.info(f"Saved recorded audio: {unique_filename} (ID: {asset_id}, {mime_type}, {duration}s, S3: {s3_success})")
     return asset_id
 
 def create_tts_asset(name: str, text: str, voice: str = "WOMAN") -> str:
