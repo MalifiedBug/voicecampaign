@@ -718,7 +718,7 @@ def add_audio_asset(
     asset_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
     if not external_url:
-        external_url = f"https://cvralbaxzcirpdnhgyus.supabase.co/storage/v1/object/public/farmcalling-audio/{filename}"
+        external_url = f"https://oyqcsfdzlbldrmykoosq.supabase.co/storage/v1/object/public/farmcalling-audio/{filename}"
 
     db_execute("""
         INSERT INTO audio_assets (
@@ -742,7 +742,7 @@ def add_audio_asset(
 
 def get_audio_assets(include_test_stubs: bool = False) -> List[Dict[str, Any]]:
     """Returns list of audible audio assets from Supabase PostgreSQL."""
-    filter_sql = "" if include_test_stubs else "WHERE (source_type = 'tts' OR file_size_bytes > 500)"
+    filter_sql = "" if include_test_stubs else "WHERE (source_type = 'tts' OR file_size_bytes > 0 OR audio_bytes IS NOT NULL)"
     return db_execute(f"""
         SELECT id, name, filename, filepath, mime_type, source_type,
                duration_seconds, file_size_bytes, tts_text, tts_voice,
@@ -1164,8 +1164,8 @@ def get_contacts(
 
     if search_query and search_query.strip():
         q = f"%{search_query.strip().lower()}%"
-        clauses.append("(LOWER(name) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(organization) LIKE ? OR LOWER(email) LIKE ?)")
-        params.extend([q, q, q, q])
+        clauses.append("(LOWER(name) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(COALESCE(organization, '')) LIKE ? OR LOWER(COALESCE(email, '')) LIKE ? OR LOWER(COALESCE(group_tag, '')) LIKE ? OR LOWER(COALESCE(notes, '')) LIKE ?)")
+        params.extend([q, q, q, q, q, q])
 
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
@@ -1205,6 +1205,103 @@ def delete_contacts(contact_ids: List[str]) -> int:
     placeholders = ", ".join(["?"] * len(contact_ids))
     db_execute(f"DELETE FROM contacts WHERE id IN ({placeholders})", tuple(contact_ids))
     return len(contact_ids)
+
+def bulk_update_contact_group(contact_ids: List[str], new_group: str) -> int:
+    """Updates group_tag for a list of contacts."""
+    if not contact_ids or not new_group or not new_group.strip():
+        return 0
+    placeholders = ", ".join(["?"] * len(contact_ids))
+    params = [new_group.strip()] + list(contact_ids)
+    db_execute(f"UPDATE contacts SET group_tag = ? WHERE id IN ({placeholders})", tuple(params))
+    return len(contact_ids)
+
+def find_duplicate_contacts() -> List[Dict[str, Any]]:
+    """
+    Scans the contacts table for duplicate phone numbers.
+    Returns list of duplicate groups with their full contact records.
+    """
+    rows = db_execute("""
+        SELECT phone, COUNT(*) as cnt
+        FROM contacts
+        WHERE phone IS NOT NULL AND phone != ''
+        GROUP BY phone
+        HAVING COUNT(*) > 1
+        ORDER BY cnt DESC
+    """, fetch="all") or []
+
+    results = []
+    for r in rows:
+        phone = r["phone"]
+        dups = db_execute("SELECT * FROM contacts WHERE phone = ? ORDER BY created_at DESC", (phone,), fetch="all") or []
+        results.append({
+            "phone": phone,
+            "count": r["cnt"],
+            "contacts": dups
+        })
+    return results
+
+def deduplicate_contacts(strategy: str = "merge_into_newest") -> Dict[str, Any]:
+    """
+    Deduplicates contacts by normalized phone number.
+    - 'merge_into_newest': keeps the newest record as primary, fills in missing fields
+      (name, email, organization, notes, group_tag) from older duplicates, then deletes older duplicates.
+    - 'keep_oldest': keeps the oldest record as primary, fills in missing fields from newer duplicates,
+      then deletes newer duplicates.
+    Returns summary: {"duplicate_groups": int, "removed_count": int, "retained_count": int}
+    """
+    dup_groups = find_duplicate_contacts()
+    if not dup_groups:
+        return {"duplicate_groups": 0, "removed_count": 0, "retained_count": 0}
+
+    total_removed = 0
+    total_retained = 0
+
+    for group in dup_groups:
+        contacts_in_group = group["contacts"]
+        if len(contacts_in_group) < 2:
+            continue
+
+        if strategy == "keep_oldest":
+            primary = contacts_in_group[-1]
+            others = contacts_in_group[:-1]
+        else:
+            primary = contacts_in_group[0]
+            others = contacts_in_group[1:]
+
+        upd = {}
+        for other in others:
+            if not primary.get("name") or primary["name"] == primary["phone"]:
+                if other.get("name") and other["name"] != other["phone"]:
+                    primary["name"] = other["name"]
+                    upd["name"] = other["name"]
+            if not primary.get("email") and other.get("email"):
+                primary["email"] = other["email"]
+                upd["email"] = other["email"]
+            if not primary.get("organization") and other.get("organization"):
+                primary["organization"] = other["organization"]
+                upd["organization"] = other["organization"]
+            if not primary.get("notes") and other.get("notes"):
+                primary["notes"] = other["notes"]
+                upd["notes"] = other["notes"]
+            if (not primary.get("group_tag") or primary["group_tag"] in ("Default", "General", "Bulk-Import")) and other.get("group_tag") and other["group_tag"] not in ("Default", "General", "Bulk-Import"):
+                primary["group_tag"] = other["group_tag"]
+                upd["group_tag"] = other["group_tag"]
+
+        if upd:
+            update_contact(primary["id"], upd)
+
+        to_remove_ids = [o["id"] for o in others]
+        if to_remove_ids:
+            delete_contacts(to_remove_ids)
+            total_removed += len(to_remove_ids)
+
+        total_retained += 1
+
+    return {
+        "duplicate_groups": len(dup_groups),
+        "removed_count": total_removed,
+        "retained_count": total_retained
+    }
 
 def clear_all_contacts() -> bool:
     db_execute("DELETE FROM contacts")

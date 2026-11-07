@@ -797,3 +797,38 @@ def api_clear_contacts():
     clear_all_contacts()
     return {"success": True}
 
+@app.get("/api/contacts/duplicates")
+def api_get_duplicates():
+    from database import find_duplicate_contacts
+    dups = find_duplicate_contacts()
+    return {
+        "success": True,
+        "duplicate_groups_count": len(dups),
+        "total_duplicates": sum(g["count"] - 1 for g in dups),
+        "groups": dups
+    }
+
+@app.post("/api/contacts/deduplicate")
+def api_deduplicate(strategy: Optional[str] = "merge_into_newest"):
+    from database import deduplicate_contacts
+    res = deduplicate_contacts(strategy=strategy or "merge_into_newest")
+    return {"success": True, "summary": res}
+
+class BulkContactActionPayload(BaseModel):
+    contact_ids: List[str]
+    group_tag: Optional[str] = None
+
+@app.post("/api/contacts/bulk-delete")
+def api_bulk_delete_contacts(payload: BulkContactActionPayload):
+    from database import delete_contacts
+    cnt = delete_contacts(payload.contact_ids)
+    return {"success": True, "deleted_count": cnt}
+
+@app.post("/api/contacts/bulk-group")
+def api_bulk_group_contacts(payload: BulkContactActionPayload):
+    from database import bulk_update_contact_group
+    if not payload.group_tag:
+        raise HTTPException(status_code=400, detail="group_tag is required")
+    cnt = bulk_update_contact_group(payload.contact_ids, payload.group_tag)
+    return {"success": True, "updated_count": cnt}
+

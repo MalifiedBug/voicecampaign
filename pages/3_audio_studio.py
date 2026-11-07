@@ -31,21 +31,49 @@ with tab_rec:
     st.markdown("Click the microphone button below to record your voice message directly in the browser.")
 
     rec_name = st.text_input("Recording Name", placeholder="e.g. Cold Wave Alert for Vegetables", key="rec_name_input")
-    audio_record = st.audio_input("Record your voice prompt")
+    audio_record = st.audio_input("Record your voice prompt", key="mic_recorder_input")
 
+    # Preserve recorded bytes into session state so widget reruns don't flush the recording
     if audio_record is not None:
-        st.write("🎧 Preview your recording:")
-        st.audio(audio_record)
+        raw_rec_bytes = audio_record.getvalue() if hasattr(audio_record, "getvalue") else audio_record.read()
+        if raw_rec_bytes and len(raw_rec_bytes) > 0:
+            st.session_state["mic_recorded_bytes"] = raw_rec_bytes
+            st.session_state["mic_recorded_type"] = getattr(audio_record, "type", "audio/wav")
 
-        if st.button("💾 Save Recording to Audio Library", type="primary", key="save_rec_btn"):
-            audio_bytes = audio_record.read()
-            if not rec_name.strip():
-                rec_name = f"Voice Recording {datetime.now().strftime('%b %d %H:%M')}"
-            
-            asset_id = save_recorded_audio(audio_bytes=audio_bytes, custom_name=rec_name, format_hint="wav")
-            update_settings({"default_audio_id": asset_id})
-            st.success(f"🎉 Recording '{rec_name}' saved to Supabase and set as active default call prompt! (ID: {asset_id[:8]}...)")
-            st.rerun()
+    cached_rec_bytes = st.session_state.get("mic_recorded_bytes")
+
+    if cached_rec_bytes:
+        st.write("🎧 Preview your recording:")
+        rec_type = st.session_state.get("mic_recorded_type", "audio/wav")
+        st.audio(cached_rec_bytes, format=rec_type)
+        st.caption(f"Captured: `{round(len(cached_rec_bytes) / 1024, 1)} KB` audio ready to store.")
+
+        col_save_btn, col_discard_btn = st.columns([2, 1])
+        with col_save_btn:
+            if st.button("💾 Save Recording to Audio Library", type="primary", key="save_rec_btn", use_container_width=True):
+                r_name = rec_name.strip() if rec_name.strip() else f"Voice Recording {datetime.now().strftime('%b %d %H:%M')}"
+                hint = "wav"
+                if "webm" in rec_type:
+                    hint = "webm"
+                elif "ogg" in rec_type:
+                    hint = "ogg"
+                elif "mp3" in rec_type or "mpeg" in rec_type:
+                    hint = "mp3"
+
+                with st.spinner("Storing & normalizing audio in Supabase..."):
+                    asset_id = save_recorded_audio(audio_bytes=cached_rec_bytes, custom_name=r_name, format_hint=hint)
+                    update_settings({"default_audio_id": asset_id})
+
+                st.session_state.pop("mic_recorded_bytes", None)
+                st.session_state.pop("mic_recorded_type", None)
+                st.success(f"🎉 Recording **'{r_name}'** saved to Supabase and set as active default call prompt! (ID: `{asset_id[:8]}...`)")
+                st.rerun()
+
+        with col_discard_btn:
+            if st.button("🗑️ Discard Recording", key="discard_rec_btn", use_container_width=True):
+                st.session_state.pop("mic_recorded_bytes", None)
+                st.session_state.pop("mic_recorded_type", None)
+                st.rerun()
 
 # TAB 2: Upload Audio File
 with tab_up:
@@ -56,19 +84,20 @@ with tab_up:
     uploaded_file = st.file_uploader("Choose an audio file", type=["mp3", "wav"], key="uploader_widget")
 
     if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
         st.write("🎧 Audio Preview:")
-        st.audio(uploaded_file)
+        st.audio(file_bytes, format=getattr(uploaded_file, "type", "audio/wav"))
 
-        if st.button("💾 Save Audio to Library", type="primary", key="save_up_btn"):
-            file_bytes = uploaded_file.read()
+        if st.button("💾 Save Audio to Library", type="primary", key="save_up_btn", use_container_width=True):
             c_name = custom_name.strip() if custom_name.strip() else uploaded_file.name
-            asset_id = save_uploaded_audio(
-                file_name=uploaded_file.name,
-                file_bytes=file_bytes,
-                custom_name=c_name
-            )
-            update_settings({"default_audio_id": asset_id})
-            st.success(f"🎉 Audio '{c_name}' uploaded to Supabase and set as active default call prompt! (ID: {asset_id[:8]}...)")
+            with st.spinner("Processing & uploading to Supabase..."):
+                asset_id = save_uploaded_audio(
+                    file_name=uploaded_file.name,
+                    file_bytes=file_bytes,
+                    custom_name=c_name
+                )
+                update_settings({"default_audio_id": asset_id})
+            st.success(f"🎉 Audio **'{c_name}'** uploaded to Supabase and set as active default call prompt! (ID: `{asset_id[:8]}...`)")
             st.rerun()
 
 # TAB 3: Text-to-Speech Studio
@@ -107,7 +136,13 @@ with tab_tts:
 
 # Section 4: Audio Library & Player
 st.markdown("---")
-st.subheader("📚 Saved Voice Library")
+col_lib_header, col_lib_ref = st.columns([3, 1])
+with col_lib_header:
+    st.subheader("📚 Saved Voice Library")
+with col_lib_ref:
+    st.write("")
+    if st.button("🔄 Refresh Library", use_container_width=True):
+        st.rerun()
 
 assets = get_audio_assets()
 

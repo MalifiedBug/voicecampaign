@@ -204,6 +204,70 @@ class TestVcfAndContacts(unittest.TestCase):
         self.assertEqual(res_clear.status_code, 200)
         self.assertEqual(get_contacts_count(), 0)
 
+    def test_07_find_and_resolve_duplicates(self):
+        # Create duplicate contacts with same phone number
+        c1 = create_contact(name="Ramesh P", phone="+919988776655", organization="Patel Farms", group_tag="Farmers")
+        c2 = create_contact(name="+919988776655", phone="+919988776655", email="ramesh@patelfarms.in", group_tag="General")
+        
+        dups = self.client.get("/api/contacts/duplicates").json()
+        self.assertTrue(dups["success"])
+        self.assertEqual(dups["duplicate_groups_count"], 1)
+        self.assertEqual(dups["total_duplicates"], 1)
+
+        # Deduplicate
+        res = self.client.post("/api/contacts/deduplicate?strategy=merge_into_newest").json()
+        self.assertTrue(res["success"])
+        self.assertEqual(res["summary"]["removed_count"], 1)
+
+        # Check remaining contact has merged details
+        rem = get_contact_by_phone("+919988776655")
+        self.assertIsNotNone(rem)
+        self.assertEqual(rem["phone"], "+919988776655")
+        self.assertTrue("Ramesh" in rem["name"] or rem["name"] == "+919988776655")
+
+    def test_08_bulk_group_and_delete(self):
+        c1 = create_contact(name="Alpha", phone="+919111111111", group_tag="OldGroup")
+        c2 = create_contact(name="Beta", phone="+919222222222", group_tag="OldGroup")
+
+        # Bulk group update
+        res_grp = self.client.post("/api/contacts/bulk-group", json={
+            "contact_ids": [c1, c2],
+            "group_tag": "NewVIPGroup"
+        }).json()
+        self.assertTrue(res_grp["success"])
+        self.assertEqual(res_grp["updated_count"], 2)
+        self.assertEqual(get_contact(c1)["group_tag"], "NewVIPGroup")
+
+        # Bulk delete
+        res_del = self.client.post("/api/contacts/bulk-delete", json={
+            "contact_ids": [c1, c2]
+        }).json()
+        self.assertTrue(res_del["success"])
+        self.assertEqual(res_del["deleted_count"], 2)
+        self.assertIsNone(get_contact(c1))
+
+    def test_09_audio_recording_storage_and_reflection(self):
+        from audio_manager import save_recorded_audio
+        from database import get_audio_assets, get_audio_asset, get_audio_bytes, delete_audio_asset
+        
+        # Test wav audio bytes (44 bytes RIFF header)
+        sample_wav = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00" + (b"\x00\x00" * 50)
+        aid = save_recorded_audio(audio_bytes=sample_wav, custom_name="Test Voice Prompt Announcement", format_hint="wav")
+        self.assertIsNotNone(aid)
+
+        # Verify reflected in audio assets
+        assets = get_audio_assets()
+        asset_ids = [a["id"] for a in assets]
+        self.assertIn(aid, asset_ids)
+
+        # Verify binary bytes retrieval
+        rec_bytes = get_audio_bytes(aid)
+        self.assertIsNotNone(rec_bytes)
+        self.assertGreater(len(rec_bytes), 0)
+
+        # Cleanup
+        delete_audio_asset(aid)
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -19,7 +19,10 @@ from database import (
     clear_all_contacts,
     get_contacts_count,
     get_contact_groups,
-    get_settings
+    get_settings,
+    find_duplicate_contacts,
+    deduplicate_contacts,
+    bulk_update_contact_group
 )
 from vcf_parser import (
     parse_vcf_bytes,
@@ -159,22 +162,78 @@ with tab_upload:
 
 
 # ==============================================================================
-# TAB 2: CONTACTS DIRECTORY & CAMPAIGN ACTIONS
+# TAB 2: CONTACTS DIRECTORY, SEARCH, DEDUPLICATION & BULK ACTIONS
 # ==============================================================================
 with tab_directory:
     st.subheader("Audience Directory")
 
-    # Search & Filter Controls
-    col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
+    # --- 1. Deduplication Detection & Resolution Section ---
+    dup_groups = find_duplicate_contacts()
+    dup_count = len(dup_groups)
+    total_redundant = sum(g["count"] - 1 for g in dup_groups)
+
+    if dup_count > 0:
+        with st.container(border=True):
+            col_dup_text, col_dup_btn = st.columns([2.5, 1.2])
+            with col_dup_text:
+                st.warning(f"⚠️ **Duplicate Contacts Found:** **{dup_count}** phone number(s) have **{total_redundant}** duplicate record(s).")
+                st.caption("Merge missing contact details (names, organizations, emails, tags) into primary records and purge redundant entries.")
+            with col_dup_btn:
+                with st.popover("🧹 Deduplicate Contacts", use_container_width=True):
+                    st.markdown("##### 🧹 Duplicate Resolution Tool")
+                    st.markdown(f"Detected **{dup_count}** phone numbers with multiple entries ({total_redundant} redundant records).")
+                    
+                    dup_strategy = st.radio(
+                        "Deduplication Preference:",
+                        ["Merge into Newest Record (Recommended)", "Merge into Oldest Record"],
+                        index=0,
+                        help="Fills empty contact fields from other duplicates, then purges redundant rows."
+                    )
+                    strategy_key = "merge_into_newest" if "Newest" in dup_strategy else "keep_oldest"
+
+                    if st.button("🚀 Merge & Purge Duplicates Now", type="primary", use_container_width=True):
+                        with st.spinner("Processing deduplication in PostgreSQL..."):
+                            d_res = deduplicate_contacts(strategy=strategy_key)
+                        st.cache_data.clear()
+                        st.success(f"🎉 Deduplicated **{d_res['duplicate_groups']}** group(s)! Merged and purged **{d_res['removed_count']}** duplicate record(s).")
+                        st.rerun()
+
+                    with st.expander("👁️ Preview Duplicate Contacts", expanded=False):
+                        dup_table = []
+                        for dg in dup_groups:
+                            for dc in dg["contacts"]:
+                                dup_table.append({
+                                    "Phone": dg["phone"],
+                                    "Name": dc["name"],
+                                    "Organization": dc.get("organization") or "—",
+                                    "Email": dc.get("email") or "—",
+                                    "Group": dc.get("group_tag") or "—",
+                                    "Added": (dc.get("created_at") or "")[:10]
+                                })
+                        st.dataframe(pd.DataFrame(dup_table), use_container_width=True)
+
+    # --- 2. Search & Filter Controls ---
+    col_s1, col_s2, col_s3, col_s4 = st.columns([2.5, 1.2, 0.7, 0.9])
     with col_s1:
-        search_query = st.text_input("🔍 Search Contacts", placeholder="Search by name, phone (+91...), company, or email...")
+        search_query = st.text_input(
+            "🔍 Search Contacts",
+            placeholder="Search by name, phone (+91...), company, group, notes, or email...",
+            key="contacts_search_input"
+        )
     with col_s2:
         all_groups = ["All"] + groups
         selected_group = st.selectbox("Filter by Group", all_groups, index=0)
     with col_s3:
         st.write("")
         st.write("")
-        if st.button("🔄 Refresh Directory", use_container_width=True):
+        if search_query:
+            if st.button("✖ Clear", use_container_width=True):
+                st.session_state["contacts_search_input"] = ""
+                st.rerun()
+    with col_s4:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Refresh", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
@@ -185,15 +244,43 @@ with tab_directory:
     )
 
     if not contacts:
-        st.info("No contacts found matching your criteria. Upload a `.vcf` file above or add contacts manually.")
+        if search_query or selected_group != "All":
+            st.warning(f"No contacts found matching search '{search_query}' in group '{selected_group}'.")
+        else:
+            st.info("No contacts found in directory. Upload a `.vcf` file above or add contacts manually.")
     else:
-        st.caption(f"Showing **{len(contacts)}** contact(s)")
+        # Search match feedback
+        if search_query.strip():
+            st.caption(f"🔍 Found **{len(contacts)}** contact(s) matching `\"{search_query.strip()}\"`")
+        else:
+            st.caption(f"Showing **{len(contacts)}** contact(s)")
 
-        # Prepare DataFrame
+        # Initialize selection set in session state
+        if "selected_contact_ids" not in st.session_state:
+            st.session_state["selected_contact_ids"] = set()
+
+        # Selection Control Bar (Select All / Clear Selection)
+        col_sel_a, col_sel_c, col_sel_space = st.columns([1, 1, 3])
+        with col_sel_a:
+            if st.button("☑️ Select All Visible", use_container_width=True):
+                st.session_state["selected_contact_ids"] = {c["id"] for c in contacts}
+                st.rerun()
+        with col_sel_c:
+            if st.button("⬜ Clear Selection", use_container_width=True):
+                st.session_state["selected_contact_ids"] = set()
+                st.rerun()
+        with col_sel_space:
+            active_sel_count = len(st.session_state["selected_contact_ids"].intersection({c["id"] for c in contacts}))
+            if active_sel_count > 0:
+                st.markdown(f"**📌 {active_sel_count} of {len(contacts)} contact(s) selected**")
+            else:
+                st.caption("Tip: Use the checkboxes in the table below for bulk operations.")
+
+        # Prepare DataFrame with interactive 'Select' column
         table_data = []
         for c in contacts:
             table_data.append({
-                "Select": False,
+                "Select": c["id"] in st.session_state["selected_contact_ids"],
                 "ID": c["id"],
                 "Name": c["name"],
                 "Phone": c["phone"],
@@ -206,57 +293,14 @@ with tab_directory:
 
         df_contacts = pd.DataFrame(table_data)
 
-        # Bulk Actions Toolbar
-        with st.container(border=True):
-            st.markdown("##### ⚡ Audience Actions")
-            col_act1, col_act2, col_act3, col_act4 = st.columns([1.2, 1, 1, 1])
-
-            with col_act1:
-                # Select all contacts for bulk calling
-                all_phones_str = "<".join([c["phone"] for c in contacts])
-                if st.button("📢 Launch Campaign with ALL Filtered Contacts", type="primary", use_container_width=True):
-                    st.session_state["campaign_target_numbers"] = all_phones_str
-                    st.session_state["campaign_default_name"] = f"Broadcast ({selected_group} - {len(contacts)} contacts)"
-                    st.switch_page("pages/2_schedules.py")
-
-            with col_act2:
-                # Export to CSV
-                csv_buffer = io.StringIO()
-                df_contacts.drop(columns=["Select", "ID"]).to_csv(csv_buffer, index=False)
-                st.download_button(
-                    label="📥 Export CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name="voice_campaign_contacts.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-
-            with col_act3:
-                # Export to .vcf
-                vcf_text = export_contacts_to_vcf(contacts)
-                st.download_button(
-                    label="📇 Export .vcf",
-                    data=vcf_text,
-                    file_name="voice_campaign_contacts.vcf",
-                    mime="text/vcard",
-                    use_container_width=True
-                )
-
-            with col_act4:
-                # Clear all contacts confirm expander
-                with st.popover("🗑️ Clear Directory", use_container_width=True):
-                    st.warning("⚠️ This will permanently remove all contacts from the database.")
-                    if st.button("Confirm Clear All Contacts", type="primary"):
-                        clear_all_contacts()
-                        st.cache_data.clear()
-                        st.success("All contacts deleted.")
-                        st.rerun()
-
-        # Contacts Table
-        st.dataframe(
-            df_contacts.drop(columns=["Select", "ID"]),
-            use_container_width=True,
+        # Interactive Data Editor for Checkbox Bulk Selection
+        edited_df = st.data_editor(
+            df_contacts,
+            hide_index=True,
+            disabled=["ID", "Name", "Phone", "Group", "Organization", "Email", "Source", "Added"],
             column_config={
+                "Select": st.column_config.CheckboxColumn("Select", help="Check to select contact for bulk action", default=False),
+                "ID": None,
                 "Name": st.column_config.TextColumn("Contact Name", width="medium"),
                 "Phone": st.column_config.TextColumn("Phone Number", width="medium"),
                 "Group": st.column_config.TextColumn("Group / Tag", width="small"),
@@ -264,8 +308,105 @@ with tab_directory:
                 "Email": st.column_config.TextColumn("Email", width="medium"),
                 "Source": st.column_config.TextColumn("Source", width="small"),
                 "Added": st.column_config.TextColumn("Added On", width="small")
-            }
+            },
+            use_container_width=True,
+            key="contacts_editor_table"
         )
+
+        # Extract currently selected rows from editor
+        selected_rows = edited_df[edited_df["Select"] == True]
+        selected_ids = selected_rows["ID"].tolist()
+        selected_phones = selected_rows["Phone"].tolist()
+
+        # Update session state if editor state changed
+        if set(selected_ids) != st.session_state["selected_contact_ids"]:
+            st.session_state["selected_contact_ids"] = set(selected_ids)
+
+        # --- 3. Dynamic Bulk Action Toolbar ---
+        with st.container(border=True):
+            if len(selected_ids) > 0:
+                st.markdown(f"##### ⚡ Bulk Actions for Selected Contacts ({len(selected_ids)})")
+                col_b1, col_b2, col_b3, col_b4 = st.columns([1.3, 1.1, 1, 1])
+
+                with col_b1:
+                    sel_phones_str = "<".join(selected_phones)
+                    if st.button(f"📢 Launch Campaign ({len(selected_ids)})", type="primary", use_container_width=True):
+                        st.session_state["campaign_target_numbers"] = sel_phones_str
+                        st.session_state["campaign_default_name"] = f"Targeted Campaign ({len(selected_ids)} contacts)"
+                        st.switch_page("pages/2_schedules.py")
+
+                with col_b2:
+                    with st.popover(f"🏷️ Assign Group ({len(selected_ids)})", use_container_width=True):
+                        new_grp_val = st.text_input("New Group / Tag Name", placeholder="e.g. VIP-Audience", key="bulk_grp_val_inp")
+                        if st.button("Apply New Group", key="apply_grp_btn", type="primary", use_container_width=True):
+                            if new_grp_val.strip():
+                                bulk_update_contact_group(selected_ids, new_grp_val.strip())
+                                st.cache_data.clear()
+                                st.success(f"Updated group tag for {len(selected_ids)} contacts to '{new_grp_val.strip()}'.")
+                                st.rerun()
+
+                with col_b3:
+                    sel_contacts_raw = [c for c in contacts if c["id"] in set(selected_ids)]
+                    vcf_sel_text = export_contacts_to_vcf(sel_contacts_raw)
+                    st.download_button(
+                        label=f"📇 Export .vcf ({len(selected_ids)})",
+                        data=vcf_sel_text,
+                        file_name=f"contacts_selected_{len(selected_ids)}.vcf",
+                        mime="text/vcard",
+                        use_container_width=True
+                    )
+
+                with col_b4:
+                    with st.popover(f"🗑️ Delete ({len(selected_ids)})", use_container_width=True):
+                        st.warning(f"⚠️ Permanently delete {len(selected_ids)} selected contact(s)?")
+                        if st.button("Confirm Bulk Delete", type="primary", use_container_width=True):
+                            delete_contacts(selected_ids)
+                            st.session_state["selected_contact_ids"] = set()
+                            st.cache_data.clear()
+                            st.success(f"Deleted {len(selected_ids)} contact(s).")
+                            st.rerun()
+            else:
+                # Default toolbar for entire filtered view
+                st.markdown("##### ⚡ Audience Actions (Filtered Contacts)")
+                col_act1, col_act2, col_act3, col_act4 = st.columns([1.3, 1, 1, 1])
+
+                with col_act1:
+                    all_phones_str = "<".join([c["phone"] for c in contacts])
+                    if st.button(f"📢 Campaign to ALL Filtered ({len(contacts)})", type="primary", use_container_width=True):
+                        st.session_state["campaign_target_numbers"] = all_phones_str
+                        st.session_state["campaign_default_name"] = f"Broadcast ({selected_group} - {len(contacts)} contacts)"
+                        st.switch_page("pages/2_schedules.py")
+
+                with col_act2:
+                    csv_buffer = io.StringIO()
+                    df_contacts.drop(columns=["Select", "ID"]).to_csv(csv_buffer, index=False)
+                    st.download_button(
+                        label="📥 Export CSV",
+                        data=csv_buffer.getvalue(),
+                        file_name="voice_campaign_contacts.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
+                with col_act3:
+                    vcf_text = export_contacts_to_vcf(contacts)
+                    st.download_button(
+                        label="📇 Export .vcf",
+                        data=vcf_text,
+                        file_name="voice_campaign_contacts.vcf",
+                        mime="text/vcard",
+                        use_container_width=True
+                    )
+
+                with col_act4:
+                    with st.popover("🗑️ Clear Directory", use_container_width=True):
+                        st.warning("⚠️ This will permanently remove all contacts from the database.")
+                        if st.button("Confirm Clear All Contacts", type="primary"):
+                            clear_all_contacts()
+                            st.session_state["selected_contact_ids"] = set()
+                            st.cache_data.clear()
+                            st.success("All contacts deleted.")
+                            st.rerun()
 
         # Individual Contact Inspection / Quick Delete
         with st.expander("🛠️ Manage Individual Contact", expanded=False):
