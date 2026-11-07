@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 
 const SUPABASE_IPV4_POOLER =
-  'postgresql://postgres.oyqcsfdzlbldrmykoosq:X#?S&8!HGFP!vH9@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres';
+  'postgresql://postgres.oyqcsfdzlbldrmykoosq:X#?S&8!HGFP!vH9@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres';
 
 function getPoolConfig() {
   let connStr =
@@ -12,8 +12,8 @@ function getPoolConfig() {
 
   // Vercel serverless functions in AWS are IPv4 only.
   // Direct hostname db.<ref>.supabase.co is IPv6 only, causing getaddrinfo ENOTFOUND on Vercel.
-  // We automatically translate it to Supabase's IPv4 connection pooler.
-  if (connStr.includes('db.oyqcsfdzlbldrmykoosq.supabase.co')) {
+  // We automatically translate it to Supabase's IPv4 connection pooler on transaction port 6543.
+  if (connStr.includes('db.oyqcsfdzlbldrmykoosq.supabase.co') || connStr.includes('pooler.supabase.com')) {
     connStr = SUPABASE_IPV4_POOLER;
   }
 
@@ -24,12 +24,12 @@ function getPoolConfig() {
         user: decodeURIComponent(match[1]),
         password: match[2],
         host: match[3],
-        port: parseInt(match[4], 10),
+        port: 6543, // Transaction pooler for serverless
         database: match[5],
         ssl: { rejectUnauthorized: false },
-        max: 5,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
+        max: 2,
+        idleTimeoutMillis: 5000,
+        connectionTimeoutMillis: 8000,
       };
     }
   } catch (e) {}
@@ -37,25 +37,19 @@ function getPoolConfig() {
   return {
     connectionString: connStr,
     ssl: { rejectUnauthorized: false },
-    max: 5,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
+    max: 2,
+    idleTimeoutMillis: 5000,
+    connectionTimeoutMillis: 8000,
   };
 }
-
-let pool: Pool;
 
 declare global {
   var _pgPool: Pool | undefined;
 }
 
-if (process.env.NODE_ENV === 'production') {
-  pool = new Pool(getPoolConfig());
-} else {
-  if (!global._pgPool) {
-    global._pgPool = new Pool(getPoolConfig());
-  }
-  pool = global._pgPool;
+const pool: Pool = global._pgPool || new Pool(getPoolConfig());
+if (process.env.NODE_ENV !== 'production') {
+  global._pgPool = pool;
 }
 
 export async function query(text: string, params?: any[]) {
