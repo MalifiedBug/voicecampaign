@@ -1,14 +1,24 @@
 import { Pool } from 'pg';
 
-const rawConnStr =
-  process.env.DATABASE_URL ||
-  process.env.SUPABASE_DB_URL ||
-  process.env.POSTGRES_URL ||
-  'postgresql://postgres:X#?S&8!HGFP!vH9@db.oyqcsfdzlbldrmykoosq.supabase.co:5432/postgres';
+const SUPABASE_IPV4_POOLER =
+  'postgresql://postgres.oyqcsfdzlbldrmykoosq:X#?S&8!HGFP!vH9@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres';
 
 function getPoolConfig() {
+  let connStr =
+    process.env.DATABASE_URL ||
+    process.env.SUPABASE_DB_URL ||
+    process.env.POSTGRES_URL ||
+    SUPABASE_IPV4_POOLER;
+
+  // Vercel serverless functions in AWS are IPv4 only.
+  // Direct hostname db.<ref>.supabase.co is IPv6 only, causing getaddrinfo ENOTFOUND on Vercel.
+  // We automatically translate it to Supabase's IPv4 connection pooler.
+  if (connStr.includes('db.oyqcsfdzlbldrmykoosq.supabase.co')) {
+    connStr = SUPABASE_IPV4_POOLER;
+  }
+
   try {
-    const match = rawConnStr.match(/^postgres(?:ql)?:\/\/([^:]+):(.+)@([^:]+):(\d+)\/(.+)$/);
+    const match = connStr.match(/^postgres(?:ql)?:\/\/([^:]+):(.+)@([^:]+):(\d+)\/(.+)$/);
     if (match) {
       return {
         user: decodeURIComponent(match[1]),
@@ -17,7 +27,7 @@ function getPoolConfig() {
         port: parseInt(match[4], 10),
         database: match[5],
         ssl: { rejectUnauthorized: false },
-        max: 10,
+        max: 5,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000,
       };
@@ -25,9 +35,9 @@ function getPoolConfig() {
   } catch (e) {}
 
   return {
-    connectionString: rawConnStr,
+    connectionString: connStr,
     ssl: { rejectUnauthorized: false },
-    max: 10,
+    max: 5,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
   };
