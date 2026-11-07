@@ -194,3 +194,44 @@ def delete_audio_from_s3(s3_key: str, bucket_name: Optional[str] = None) -> bool
     except Exception as e:
         logger.warning(f"Failed to delete S3 object {s3_key}: {e}")
         return False
+
+def create_presigned_upload_url(
+    filename: str,
+    mime_type: str = "audio/wav",
+    expires_in: int = 300,
+    bucket_name: Optional[str] = None
+) -> Tuple[bool, str, str, str]:
+    """
+    Generates an S3 presigned PUT URL allowing clients (e.g. web browsers)
+    to upload directly to Supabase Storage S3.
+    Bypasses Vercel Serverless Function 4.5MB request payload limit entirely!
+    Returns: (success: bool, upload_url: str, s3_key: str, public_url: str)
+    """
+    cfg = get_s3_config()
+    b = bucket_name or cfg["bucket"]
+    client = get_s3_client()
+    if client is None:
+        return False, "", "", ""
+
+    import uuid
+    base, ext = os.path.splitext(filename)
+    if not ext:
+        ext = ".wav" if "wav" in (mime_type or "") else ".mp3"
+    s3_key = f"upload_{uuid.uuid4().hex[:12]}{ext}"
+
+    try:
+        upload_url = client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": b,
+                "Key": s3_key,
+                "ContentType": mime_type or "audio/wav"
+            },
+            ExpiresIn=expires_in
+        )
+        public_url = get_s3_public_url(s3_key, bucket_name=b)
+        return True, upload_url, s3_key, public_url
+    except Exception as e:
+        logger.error(f"Failed to generate presigned upload URL for {filename}: {e}")
+        return False, "", "", ""
+

@@ -48,7 +48,8 @@ from database import (
     get_contact,
     delete_contact,
     clear_all_contacts,
-    get_contacts_count
+    get_contacts_count,
+    add_audio_asset
 )
 from audio_manager import save_uploaded_audio, save_recorded_audio, create_tts_asset
 from vcf_parser import parse_vcf_bytes, export_contacts_to_vcf
@@ -673,6 +674,79 @@ def api_run_schedule(schedule_id: str):
 @app.get("/api/audio")
 def api_get_audio():
     return get_audio_assets()
+
+class PresignedUploadRequest(BaseModel):
+    filename: str
+    mime_type: Optional[str] = "audio/wav"
+    file_size: Optional[int] = None
+
+class ConfirmS3UploadRequest(BaseModel):
+    name: str
+    filename: str
+    s3_key: str
+    mime_type: Optional[str] = "audio/wav"
+    file_size_bytes: Optional[int] = 0
+    duration_seconds: Optional[float] = 0.0
+    set_as_default: Optional[bool] = True
+
+@app.post("/api/audio/request-upload-url")
+def api_request_upload_url(req: PresignedUploadRequest):
+    """
+    Generates a presigned S3 upload URL allowing direct-to-cloud uploads.
+    Bypasses Vercel Serverless Function 4.5MB request payload limit (HTTP 413).
+    """
+    try:
+        import s3_storage
+        success, upload_url, s3_key, public_url = s3_storage.create_presigned_upload_url(
+            filename=req.filename,
+            mime_type=req.mime_type or "audio/wav"
+        )
+        if success and upload_url:
+            return {
+                "success": True,
+                "upload_url": upload_url,
+                "s3_key": s3_key,
+                "public_url": public_url,
+                "bucket": s3_storage.get_s3_config()["bucket"]
+            }
+    except Exception as e:
+        logger.error(f"Error creating presigned upload url: {e}")
+
+    return {"success": False, "message": "Direct S3 presigned upload not available"}
+
+@app.post("/api/audio/confirm-s3-upload")
+def api_confirm_s3_upload(req: ConfirmS3UploadRequest):
+    """
+    Registers an audio asset that was uploaded directly from browser to Supabase S3.
+    """
+    import s3_storage
+    public_url = s3_storage.get_s3_public_url(req.s3_key)
+
+    aid = add_audio_asset(
+        name=req.name or req.filename,
+        filename=req.filename,
+        filepath=f"s3://{req.s3_key}",
+        mime_type=req.mime_type or "audio/wav",
+        source_type="uploaded",
+        duration_seconds=float(req.duration_seconds or 0.0),
+        file_size_bytes=int(req.file_size_bytes or 0),
+        audio_bytes=None,  # Preserved in S3 object store
+        external_url=public_url,
+        s3_key=req.s3_key
+    )
+
+    if req.set_as_default:
+        try:
+            update_settings({"default_audio_id": aid})
+        except Exception as e:
+            logger.warning(f"Could not update default_audio_id: {e}")
+
+    return {
+        "success": True,
+        "audio_id": aid,
+        "external_url": public_url,
+        "name": req.name
+    }
 
 @app.post("/api/audio/upload")
 async def api_upload_audio(audio_file: UploadFile = File(...), name: Optional[str] = Form(None)):

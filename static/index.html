@@ -398,6 +398,13 @@
       }
 
       const file = fileInput.files[0];
+      if (file.size > 4.5 * 1024 * 1024) {
+        statusBox.className = 'text-xs p-3 rounded-lg bg-rose-950 text-rose-400 border border-rose-800';
+        statusBox.innerText = '⚠️ This .vcf file exceeds 4.5 MB (Vercel payload limit). Please split the contacts into smaller .vcf files or strip contact photo avatars.';
+        statusBox.classList.remove('hidden');
+        return;
+      }
+
       const formData = new FormData();
       formData.append('vcf_file', file);
       formData.append('group_tag', groupTag);
@@ -413,6 +420,11 @@
           method: 'POST',
           body: formData
         });
+        if (res.status === 413) {
+          statusBox.className = 'text-xs p-3 rounded-lg bg-rose-950 text-rose-400 border border-rose-800';
+          statusBox.innerText = '⚠️ Error 413 (Payload Too Large): File exceeds the 4.5 MB server limit. Please upload a smaller .vcf file.';
+          return;
+        }
         const data = await res.json();
         if (data.success) {
           statusBox.className = 'text-xs p-3 rounded-lg bg-emerald-950 text-emerald-400 border border-emerald-800';
@@ -1198,27 +1210,90 @@
       }
     }
 
+    async function uploadAudioToCloud(fileOrBlob, filename, displayName, mimeType) {
+      // 1. Try direct Presigned S3 upload first (bypasses Vercel 4.5MB HTTP 413 limit completely!)
+      try {
+        const presignRes = await fetch('/api/audio/request-upload-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: filename,
+            mime_type: mimeType || 'audio/wav',
+            file_size: fileOrBlob.size
+          })
+        });
+
+        if (presignRes.ok) {
+          const presignData = await presignRes.json();
+          if (presignData.success && presignData.upload_url) {
+            // Upload directly to Supabase Storage S3
+            const s3UploadRes = await fetch(presignData.upload_url, {
+              method: 'PUT',
+              headers: { 'Content-Type': mimeType || 'audio/wav' },
+              body: fileOrBlob
+            });
+
+            if (s3UploadRes.ok) {
+              // Confirm upload and register in DB
+              const confirmRes = await fetch('/api/audio/confirm-s3-upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: displayName || filename,
+                  filename: filename,
+                  s3_key: presignData.s3_key,
+                  mime_type: mimeType || 'audio/wav',
+                  file_size_bytes: fileOrBlob.size,
+                  set_as_default: true
+                })
+              });
+              if (confirmRes.ok) {
+                const confData = await confirmRes.json();
+                return { success: true, audio_id: confData.audio_id, via: 's3_direct' };
+              }
+            }
+          }
+        }
+      } catch (presignErr) {
+        console.warn('Presigned upload failed, attempting fallback:', presignErr);
+      }
+
+      // 2. Fallback to standard multipart upload
+      const formData = new FormData();
+      formData.append('audio_file', fileOrBlob, filename);
+      formData.append('name', displayName || filename);
+      const res = await fetch('/api/audio/upload', { method: 'POST', body: formData });
+      if (res.status === 413) {
+        throw new Error('File exceeds the 4.5 MB serverless upload limit. Please use a compressed audio file under 4.5 MB.');
+      }
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Upload failed (${res.status}): ${errText}`);
+      }
+      const data = await res.json();
+      return { success: true, audio_id: data.audio_id, via: 'multipart' };
+    }
+
     async function saveRecordedAudio() {
       if (!recordedBlob) return;
       const name = document.getElementById('mic-name').value.trim() || 'Recorded Prompt';
-      const formData = new FormData();
-      formData.append('audio_file', recordedBlob, 'mic_record.wav');
-      formData.append('name', name);
+      const saveBtn = document.getElementById('btn-save-rec');
+      const originalText = saveBtn ? saveBtn.innerText : '';
+      if (saveBtn) { saveBtn.innerText = 'Uploading to Cloud...'; saveBtn.disabled = true; }
       try {
-        const res = await fetch('/api/audio/upload', { method: 'POST', body: formData });
-        if (res.ok) {
-          const data = await res.json();
-          const newId = data.audio_id;
-          await fetch(`/api/audio/${newId}/set-default`, { method: 'POST' });
-          alert('🎉 Voice recording saved to Supabase and set as active call prompt!');
+        const result = await uploadAudioToCloud(recordedBlob, 'mic_record.wav', name, 'audio/wav');
+        if (result && result.success) {
+          alert('🎉 Voice recording saved to cloud storage and set as active call prompt!');
           document.getElementById('mic-name').value = '';
           await loadAudioLibrary();
-          await loadAudioDropdowns(newId);
+          await loadAudioDropdowns(result.audio_id);
         } else {
           alert('Failed to save voice recording.');
         }
       } catch (err) {
         alert('Error saving recording: ' + err.message);
+      } finally {
+        if (saveBtn) { saveBtn.innerText = originalText; saveBtn.disabled = false; }
       }
     }
 
@@ -1226,25 +1301,25 @@
       const f = document.getElementById('upload-file').files[0];
       const name = document.getElementById('upload-name').value.trim();
       if (!f) return alert('Select an MP3 or WAV audio file.');
-      const formData = new FormData();
-      formData.append('audio_file', f);
-      formData.append('name', name || f.name);
+      const btn = document.querySelector('button[onclick="uploadAudioFile()"]');
+      const origText = btn ? btn.innerText : '';
+      if (btn) { btn.innerText = 'Uploading to Cloud...'; btn.disabled = true; }
       try {
-        const res = await fetch('/api/audio/upload', { method: 'POST', body: formData });
-        if (res.ok) {
-          const data = await res.json();
-          const newId = data.audio_id;
-          await fetch(`/api/audio/${newId}/set-default`, { method: 'POST' });
-          alert('🎉 Audio uploaded to Supabase and set as active call prompt!');
+        const mime = f.type || (f.name.endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav');
+        const result = await uploadAudioToCloud(f, f.name, name || f.name, mime);
+        if (result && result.success) {
+          alert('🎉 Audio uploaded to cloud storage and set as active call prompt!');
           document.getElementById('upload-file').value = '';
           document.getElementById('upload-name').value = '';
           await loadAudioLibrary();
-          await loadAudioDropdowns(newId);
+          await loadAudioDropdowns(result.audio_id);
         } else {
           alert('Failed to upload audio.');
         }
       } catch (err) {
         alert('Error uploading audio: ' + err.message);
+      } finally {
+        if (btn) { btn.innerText = origText; btn.disabled = false; }
       }
     }
 
