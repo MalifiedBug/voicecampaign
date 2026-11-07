@@ -227,6 +227,51 @@ export default function VoiceCampaignDashboard() {
     }
   };
 
+  const handleBulkDeleteContacts = async () => {
+    if (selectedContactIds.length === 0) {
+      showToast('Please select at least one contact to delete.', 'error');
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete ${selectedContactIds.length} selected contact(s)?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedContactIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      showToast(data.message || `Deleted ${selectedContactIds.length} contact(s).`, 'success');
+      setSelectedContactIds([]);
+      fetchContacts(contactSearch, selectedGroup);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleClearAllContacts = async () => {
+    if (contacts.length === 0) return;
+    if (!confirm('⚠️ Are you sure you want to delete ALL contacts? This action is permanent and cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/contacts?all=true', { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      showToast('All contacts cleared from directory.', 'info');
+      setSelectedContactIds([]);
+      fetchContacts('', 'All Groups');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const handleAddContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newContact.phone) return;
@@ -781,19 +826,28 @@ export default function VoiceCampaignDashboard() {
                 </p>
               </div>
 
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={handlePopulateDialerFromContacts}
                   disabled={selectedContactIds.length === 0}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium"
+                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium shadow-sm transition-all"
                 >
                   <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
                   Dial Selected ({selectedContactIds.length})
                 </button>
 
                 <button
+                  onClick={handleBulkDeleteContacts}
+                  disabled={selectedContactIds.length === 0}
+                  className="bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium shadow-sm transition-all"
+                >
+                  <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                  Delete Selected ({selectedContactIds.length})
+                </button>
+
+                <button
                   onClick={handleDeduplicate}
-                  className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium"
+                  className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium transition-all"
                 >
                   <Sparkles className="w-3.5 h-3.5 mr-1.5" />
                   Deduplicate
@@ -801,11 +855,21 @@ export default function VoiceCampaignDashboard() {
 
                 <button
                   onClick={() => setShowAddContactModal(true)}
-                  className="bg-slate-800 hover:bg-slate-700 text-white text-xs px-3 py-2 rounded-lg flex items-center border border-slate-700"
+                  className="bg-slate-800 hover:bg-slate-700 text-white text-xs px-3 py-2 rounded-lg flex items-center border border-slate-700 transition-all"
                 >
                   <UserPlus className="w-3.5 h-3.5 mr-1.5" />
                   Add Contact
                 </button>
+
+                {contacts.length > 0 && (
+                  <button
+                    onClick={handleClearAllContacts}
+                    className="border border-red-900/60 hover:bg-red-950/40 text-red-400 text-xs px-2.5 py-2 rounded-lg flex items-center transition-all"
+                    title="Clear All Contacts"
+                  >
+                    Clear All
+                  </button>
+                )}
               </div>
             </div>
 

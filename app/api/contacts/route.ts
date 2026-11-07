@@ -50,17 +50,42 @@ export async function DELETE(req: Request) {
     const id = searchParams.get('id');
     const clearAll = searchParams.get('all') === 'true';
 
+    // 1. Wipe all contacts
     if (clearAll) {
       await query('DELETE FROM contacts');
       return NextResponse.json({ success: true, message: 'All contacts cleared' });
     }
 
-    if (!id) {
-      return NextResponse.json({ error: 'Contact ID required' }, { status: 400 });
+    // 2. Parse IDs from body or query params
+    let idsToDelete: string[] = [];
+    try {
+      const body = await req.json();
+      if (body.ids && Array.isArray(body.ids)) {
+        idsToDelete = body.ids.filter(Boolean);
+      }
+    } catch (e) {}
+
+    const idsParam = searchParams.get('ids');
+    if (idsParam) {
+      idsToDelete = idsToDelete.concat(idsParam.split(',').map((x) => x.trim()).filter(Boolean));
     }
 
-    await query('DELETE FROM contacts WHERE id = $1', [id]);
-    return NextResponse.json({ success: true, id });
+    if (id) {
+      idsToDelete.push(id.trim());
+    }
+
+    idsToDelete = Array.from(new Set(idsToDelete));
+
+    if (idsToDelete.length === 0) {
+      return NextResponse.json({ error: 'No contact ID(s) provided for deletion' }, { status: 400 });
+    }
+
+    await query(`DELETE FROM contacts WHERE id = ANY($1::text[])`, [idsToDelete]);
+    return NextResponse.json({
+      success: true,
+      deleted_count: idsToDelete.length,
+      message: `Successfully deleted ${idsToDelete.length} contact(s).`,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
