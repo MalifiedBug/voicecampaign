@@ -18,7 +18,9 @@ from database import (
     delete_schedule,
     get_settings,
     get_contacts,
-    bulk_create_contacts
+    get_contact_groups,
+    bulk_create_contacts,
+    format_vobiz_recipients
 )
 from vcf_parser import parse_vcf_bytes
 from scheduler import register_schedule_job, execute_call_job
@@ -82,50 +84,120 @@ else:
 
 # Section 1: Create New Schedule
 with st.expander("➕ Create New Call Schedule", expanded=True):
-    # Audience & .vcf Loader Tool
-    with st.expander("👥 Import Recipients from .vcf File or Contacts Directory", expanded=False):
-        col_vcf, col_book = st.columns(2)
-        with col_vcf:
-            st.markdown("##### 📁 Quick .vcf Uploader")
-            quick_vcf = st.file_uploader(
-                "Upload .vcf to populate campaign recipients",
-                type=["vcf", "vcard"],
-                key="sched_quick_vcf",
-                help="Bulk parses contacts and automatically enters them into the campaign form"
-            )
-            if quick_vcf is not None:
-                parsed_c = parse_vcf_bytes(quick_vcf.read())
-                if parsed_c:
-                    bulk_create_contacts(parsed_c)
-                    vobiz_bulk = "<".join([c["phone"] for c in parsed_c])
-                    st.session_state["campaign_target_numbers"] = vobiz_bulk
-                    st.session_state["campaign_default_name"] = f"Campaign ({quick_vcf.name})"
-                    st.success(f"✅ Loaded {len(parsed_c)} recipient(s) from `{quick_vcf.name}`!")
-                    st.rerun()
-                else:
-                    st.error("No valid phone numbers found in this .vcf.")
-        with col_book:
-            st.markdown("##### 📇 Pick from Contacts Directory")
-            all_c = get_contacts(limit=500)
-            if not all_c:
-                st.caption("No contacts saved yet. Upload a .vcf file or add contacts in the Contacts page.")
-            else:
-                contact_opts = {f"{c['name']} ({c['phone']})": c['phone'] for c in all_c}
-                sel_contacts = st.multiselect("Select Contact(s)", list(contact_opts.keys()), key="sched_contact_pick")
-                col_sel1, col_sel2 = st.columns(2)
-                with col_sel1:
-                    if st.button("Apply Selected Contacts", use_container_width=True):
-                        if sel_contacts:
-                            st.session_state["campaign_target_numbers"] = "<".join([contact_opts[k] for k in sel_contacts])
-                            st.rerun()
-                with col_sel2:
-                    if st.button(f"Select ALL ({len(all_c)}) Contacts", use_container_width=True):
-                        st.session_state["campaign_target_numbers"] = "<".join([c["phone"] for c in all_c])
+    st.markdown("#### 👥 1. Select Campaign Recipients (Audience)")
+    st.caption("Select multiple contacts from your saved directory, upload a .vcf file, or enter phone numbers.")
+
+    # Retrieve passed numbers/name from other pages if present
+    if "campaign_target_numbers" in st.session_state:
+        st.session_state["sched_compiled_recipients"] = st.session_state.pop("campaign_target_numbers")
+    if "campaign_default_name" in st.session_state:
+        st.session_state["sched_default_name"] = st.session_state.pop("campaign_default_name")
+
+    all_contacts = get_contacts(limit=2000)
+    groups = get_contact_groups()
+    has_contacts = len(all_contacts) > 0
+
+    tab_c, tab_m, tab_v = st.tabs([
+        "📇 Select from Contacts Directory",
+        "✏️ Enter Numbers Manually",
+        "📁 Upload .vcf File"
+    ])
+
+    with tab_c:
+        if not has_contacts:
+            st.info("ℹ️ No contacts saved in your directory yet. You can upload a .vcf file in the **Upload .vcf** tab or enter numbers manually.")
+        else:
+            col_grp_sel, col_btns = st.columns([1.5, 1.5])
+            with col_grp_sel:
+                selected_group = st.selectbox("Filter Contacts by Group", ["All Groups"] + groups, key="sched_group_filter") if groups else "All Groups"
+
+            filtered_contacts = all_contacts if selected_group == "All Groups" else [c for c in all_contacts if c.get("group_tag") == selected_group]
+            contact_options = {
+                f"{c['name']} ({c['phone']})" + (f" • {c.get('group_tag')}" if c.get("group_tag") else ""): c['phone']
+                for c in filtered_contacts
+            }
+
+            if "sched_selected_labels" not in st.session_state:
+                st.session_state["sched_selected_labels"] = []
+
+            with col_btns:
+                st.write("")
+                col_sel_all, col_clear = st.columns(2)
+                with col_sel_all:
+                    if st.button(f"Select All ({len(contact_options)})", key="sched_sel_all_btn", use_container_width=True):
+                        st.session_state["sched_selected_labels"] = list(contact_options.keys())
+                        st.rerun()
+                with col_clear:
+                    if st.button("Clear All", key="sched_clear_btn", use_container_width=True):
+                        st.session_state["sched_selected_labels"] = []
                         st.rerun()
 
-    # Pre-fill target numbers and name if passed from Contacts or .vcf uploader
-    default_to = st.session_state.pop("campaign_target_numbers", "")
-    default_name = st.session_state.pop("campaign_default_name", "")
+            chosen_labels = st.multiselect(
+                "Choose Contact Recipient(s)",
+                options=list(contact_options.keys()),
+                default=[l for l in st.session_state.get("sched_selected_labels", []) if l in contact_options],
+                key="sched_multiselect_widget",
+                placeholder="Search by contact name, organization, or phone number..."
+            )
+            st.session_state["sched_selected_labels"] = chosen_labels
+
+            chosen_phones = [contact_options[l] for l in chosen_labels if l in contact_options]
+
+            # Optional extra manual numbers to append
+            extra_nums = st.text_input("Additional Manual Phone Numbers to Include (optional)", placeholder="+919876543210, +919876543211", key="sched_extra_nums_input")
+            all_selected_numbers = chosen_phones.copy()
+            if extra_nums.strip():
+                for p in extra_nums.replace(",", "\n").replace(";", "\n").replace("<", "\n").split("\n"):
+                    if p.strip() and p.strip() not in all_selected_numbers:
+                        all_selected_numbers.append(p.strip())
+
+            if all_selected_numbers:
+                compiled_val = format_vobiz_recipients(all_selected_numbers)
+                st.session_state["sched_compiled_recipients"] = compiled_val
+                if len(all_selected_numbers) == 1:
+                    st.success(f"🎯 **1 Recipient Selected:** `{all_selected_numbers[0]}`")
+                else:
+                    st.success(f"🎯 **{len(all_selected_numbers)} Recipients Selected for Campaign:** `{compiled_val[:70]}{'...' if len(compiled_val) > 70 else ''}`")
+
+    with tab_m:
+        st.markdown("Enter phone numbers with international country code (e.g., `+91` for India, `+1` for US).")
+        manual_input = st.text_area(
+            "Phone Numbers (Separated by '<', commas, or new lines)",
+            value=st.session_state.get("sched_compiled_recipients", ""),
+            placeholder="+919876543210\n+919876543211\nor +919876543210<+919876543211",
+            height=90,
+            key="sched_manual_text_area"
+        )
+        if manual_input.strip():
+            formatted_m = format_vobiz_recipients(manual_input)
+            st.session_state["sched_compiled_recipients"] = formatted_m
+            m_count = len(formatted_m.split("<"))
+            st.caption(f"🎯 **{m_count} Recipient(s) Parsed** (Vobiz Format: `{formatted_m[:60]}...`)")
+
+    with tab_v:
+        st.markdown("Upload a `.vcf` / `.vcard` file to parse and auto-select all recipients.")
+        quick_vcf = st.file_uploader(
+            "Select .vcf Address Book",
+            type=["vcf", "vcard"],
+            key="sched_quick_vcf_new"
+        )
+        if quick_vcf is not None:
+            parsed_c = parse_vcf_bytes(quick_vcf.read())
+            if parsed_c:
+                bulk_create_contacts(parsed_c)
+                vobiz_bulk = format_vobiz_recipients([c["phone"] for c in parsed_c])
+                st.session_state["sched_compiled_recipients"] = vobiz_bulk
+                st.session_state["sched_default_name"] = f"Campaign ({quick_vcf.name})"
+                st.success(f"✅ Loaded {len(parsed_c)} recipient(s) from `{quick_vcf.name}`!")
+                st.rerun()
+            else:
+                st.error("No valid phone numbers found in this .vcf.")
+
+    st.markdown("---")
+    st.markdown("#### 🕒 2. Campaign Timing & Playback Flow")
+
+    default_to = st.session_state.get("sched_compiled_recipients", "")
+    default_name = st.session_state.get("sched_default_name", "")
 
     with st.form("new_schedule_form"):
         col_name, col_phone = st.columns([1, 1])
@@ -133,7 +205,7 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
             schedule_name = st.text_input("Campaign / Schedule Name", value=default_name, placeholder="e.g. Morning Crop Irrigation Reminder")
         with col_phone:
             to_number = st.text_input(
-                "Recipient Phone Number(s)",
+                "Final Recipient Phone Number(s)",
                 value=default_to,
                 placeholder="+919876543210 (or separate multiple with <)",
                 help="Vobiz accepts single E.164 numbers or bulk destinations separated by '<' (e.g. +919876543210<+919876543211)"
@@ -268,7 +340,7 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
         effective_aid = get_effective_audio_id()
         audio_map = {}
 
-        eff_asset = get_audio_asset(effective_aid)
+        eff_asset = get_audio_asset(effective_aid) if effective_aid else None
         if eff_asset:
             eff_label = f"⭐ Active Prompt: {eff_asset['name']} ({eff_asset['source_type'].capitalize()})"
             audio_map[eff_label] = eff_asset["id"]
@@ -279,7 +351,7 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
                 audio_map[label] = a["id"]
 
         if not audio_map:
-            audio_map = {"Default System Audio": "test1-sample-id"}
+            audio_map = {"No custom audio recorded (Use TTS or record in Audio Studio)": ""}
 
         col_audio, col_mode = st.columns([2, 1])
         with col_audio:
@@ -304,17 +376,20 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
         submitted = st.form_submit_button("✨ Save & Activate Schedule (IST)", type="primary", width="stretch")
 
     if submitted:
-        if not schedule_name.strip() or not to_number.strip():
-            st.error("Schedule Name and Destination Phone Number are required.")
+        clean_sched_name = schedule_name.strip()
+        clean_to_num = format_vobiz_recipients(to_number.strip())
+        if not clean_sched_name or not clean_to_num:
+            st.error("Campaign Name and at least one destination Phone Number are required.")
         else:
             s_type_key = "once" if "One-Off" in schedule_type else ("interval" if "Interval" in schedule_type else "cron")
             p_mode_key = "tts" if "TTS" in play_mode else "audio"
+            dest_count = len(clean_to_num.split("<"))
 
-            with st.status("🚀 Saving & Activating Campaign in Indian Standard Time (IST)...", expanded=True) as status:
-                st.write(f"Configuring schedule `{schedule_name}` in Asia/Kolkata timezone...")
+            with st.status(f"🚀 Saving & Activating Campaign for {dest_count} recipient{'s' if dest_count > 1 else ''} in IST...", expanded=True) as status:
+                st.write(f"Configuring schedule `{clean_sched_name}` with {dest_count} destination(s)...")
                 sched_id = create_schedule(
-                    name=schedule_name.strip(),
-                    to_number=to_number.strip(),
+                    name=clean_sched_name,
+                    to_number=clean_to_num,
                     schedule_type=s_type_key,
                     scheduled_datetime=scheduled_dt_str,
                     interval_value=interval_val,
@@ -327,11 +402,16 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
                 )
                 st.write("Activating schedule in IST telephony engine...")
                 next_run_ist = register_schedule_job(sched_id)
-                status.update(label=f"Campaign '{schedule_name}' Activated in IST!", state="complete", expanded=False)
+                status.update(label=f"Campaign '{clean_sched_name}' Activated for {dest_count} recipient(s) in IST!", state="complete", expanded=False)
+
+            # Clear temporary session state
+            st.session_state.pop("sched_compiled_recipients", None)
+            st.session_state.pop("sched_default_name", None)
+            st.session_state.pop("sched_selected_labels", None)
 
             st.session_state["activation_banner"] = {
-                "name": schedule_name.strip(),
-                "to": to_number.strip(),
+                "name": clean_sched_name,
+                "to": clean_to_num,
                 "next_run": next_run_ist or scheduled_dt_str or "Scheduled",
                 "type": s_type_key.upper(),
                 "loops": loops
@@ -379,7 +459,11 @@ else:
             head_col, status_col = st.columns([3, 1])
             with head_col:
                 st.markdown(f"### {s['name']}")
-                st.caption(f"📞 Destination: `{s['to_number']}` | Type: **{s['schedule_type'].upper()}**")
+                recips = [n for n in (s.get('to_number') or '').split('<') if n.strip()]
+                if len(recips) > 1:
+                    st.caption(f"📞 Destination: **{len(recips)} Recipients** (`{s['to_number'][:45]}...`) | Type: **{s['schedule_type'].upper()}**")
+                else:
+                    st.caption(f"📞 Destination: `{s['to_number']}` | Type: **{s['schedule_type'].upper()}**")
             with status_col:
                 badge = "🟢 ACTIVE (IST)" if s["status"] == "active" else ("⏸️ PAUSED" if s["status"] == "paused" else "🏁 COMPLETED")
                 st.markdown(f"**Status:** {badge}")

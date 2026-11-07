@@ -294,16 +294,26 @@ def serve_audio(asset_id: str, request: Request):
                 m_type = "audio/wav" if fb_bytes.startswith(b"RIFF") else "audio/mpeg"
                 return make_byte_response(fb_bytes, m_type, f"{fallback_aid}.wav")
 
-    # Tier 4: Infallible fallback - never return 404 to Vobiz during a live call!
-    for fb_name in ["test1.wav", "farm_alert.wav"]:
-        fb_path = os.path.join(STATIC_DIR, "audio", fb_name)
-        if os.path.exists(fb_path):
-            logger.warning(f"Audio asset '{asset_id}' not found; streaming fallback audio: {fb_name}")
-            with open(fb_path, "rb") as f:
-                b = f.read()
-            return make_byte_response(b, "audio/wav", fb_name)
+    # Tier 4: Fallback to most recent custom audio in Supabase, or clean silence WAV (never 404 to Vobiz)
+    latest_aid = get_latest_custom_audio_id()
+    if latest_aid and latest_aid != clean_id and latest_aid != base_id:
+        latest_asset = get_audio_asset(latest_aid)
+        if latest_asset:
+            lb = latest_asset.get("audio_bytes")
+            if lb and len(lb) > 0:
+                logger.info(f"Serving latest custom audio '{latest_aid}' for missing asset '{asset_id}'")
+                m_type = "audio/wav" if lb.startswith(b"RIFF") else "audio/mpeg"
+                return make_byte_response(lb, m_type, f"{latest_aid}.wav")
 
-    raise HTTPException(status_code=404, detail=f"Audio asset '{asset_id}' not found")
+    # If no custom audio exists, synthesize a standard 0.5s 16kHz PCM silence WAV
+    import wave, io
+    silence_io = io.BytesIO()
+    with wave.open(silence_io, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 8000)
+    return make_byte_response(silence_io.getvalue(), "audio/wav", "silence.wav")
 
 # --- Vobiz Webhooks ---
 @app.api_route("/webhook/answer", methods=["GET", "POST"])
@@ -386,8 +396,17 @@ async def answer_webhook(
                     audio_public_url = f"{base_url}/audio/{clean_aid}{ext}"
                 xml_content = VobizClient.generate_play_xml(audio_public_url, loop=target_loop)
     else:
-        audio_public_url = f"{base_url}/audio/test1.wav"
-        xml_content = VobizClient.generate_play_xml(audio_public_url, loop=target_loop)
+        # No audio_id requested: resolve canonical active custom audio or speak TTS prompt
+        eff_id = get_effective_audio_id()
+        eff_asset = get_audio_asset(eff_id) if eff_id else None
+        if eff_asset and eff_asset.get("source_type") == "tts" and eff_asset.get("tts_text"):
+            voice = eff_asset.get("tts_voice") or "WOMAN"
+            xml_content = VobizClient.generate_speak_xml(eff_asset["tts_text"], voice=voice, loop=target_loop)
+        elif eff_id:
+            audio_public_url = f"{base_url}/audio/{eff_id}.wav"
+            xml_content = VobizClient.generate_play_xml(audio_public_url, loop=target_loop)
+        else:
+            xml_content = VobizClient.generate_speak_xml("Hello, this is Voice Campaign. Your automated call is connected.", voice="WOMAN", loop=1)
 
     if call_uuid:
         update_call_log_by_uuid(

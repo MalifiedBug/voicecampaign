@@ -556,7 +556,7 @@
             return `<option value="${a.id}" ${isDef ? 'selected' : ''}>${isDef ? '⭐ Active Prompt: ' : ''}${a.name} (${a.source_type.toUpperCase()})</option>`;
           }).join('');
         } else {
-          opts = '<option value="test1-sample-id">test1 (Microphone Recording) (RECORDED)</option>';
+          opts = '<option value="">(No audio recorded yet - use TTS or record in Audio Studio)</option>';
         }
         const instSelect = document.getElementById('instant-audio-select');
         if (instSelect) {

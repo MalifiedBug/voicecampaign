@@ -552,7 +552,7 @@ def init_db():
         "time_limit": get_env_override("time_limit") or "3600",
         "machine_detection": get_env_override("machine_detection") or "false",
         "timezone": get_env_override("timezone") or "Asia/Kolkata",
-        "default_audio_id": get_env_override("default_audio_id") or "test1-sample-id",
+        "default_audio_id": get_env_override("default_audio_id") or "",
         "tts_default_voice": get_env_override("tts_default_voice") or "WOMAN",
         "tts_default_language": get_env_override("tts_default_language") or "en-US"
     }
@@ -563,68 +563,20 @@ def init_db():
             (key, str(val))
         )
 
-    # Seed default audio assets (guarantees preloaded samples are always in Supabase)
-    static_audio_dir = os.path.join(os.path.dirname(__file__), "static", "audio")
+    # Purge legacy stock audio assets and heal default_audio_id setting
+    try:
+        db_execute("DELETE FROM audio_assets WHERE id IN ('test1-sample-id', 'farm-alert-sample-id') OR filename IN ('test1.wav', 'farm_alert.wav');")
+    except Exception as e:
+        logger.warning(f"Could not purge legacy stock audios: {e}")
 
-    # 1. Seed test1.wav
-    t1_path = os.path.join(static_audio_dir, "test1.wav")
-    t1_bytes = None
-    if os.path.exists(t1_path):
-        try:
-            with open(t1_path, "rb") as f:
-                t1_bytes = f.read()
-        except Exception as e:
-            logger.warning(f"Could not read test1.wav for seeding: {e}")
-
-    db_execute("""
-        INSERT INTO audio_assets (
-            id, name, filename, filepath, mime_type, source_type,
-            duration_seconds, file_size_bytes, audio_bytes, external_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (id) DO NOTHING;
-    """, (
-        "test1-sample-id",
-        "test1 (Microphone Recording)",
-        "test1.wav",
-        t1_path,
-        "audio/wav",
-        "recorded",
-        3.42,
-        len(t1_bytes) if t1_bytes else 109484,
-        t1_bytes,
-        "https://cvralbaxzcirpdnhgyus.supabase.co/storage/v1/object/public/farmcalling-audio/test1.wav",
-        datetime.now().isoformat()
-    ))
-
-    # 2. Seed farm_alert.wav
-    fa_path = os.path.join(static_audio_dir, "farm_alert.wav")
-    fa_bytes = None
-    if os.path.exists(fa_path):
-        try:
-            with open(fa_path, "rb") as f:
-                fa_bytes = f.read()
-        except Exception as e:
-            logger.warning(f"Could not read farm_alert.wav for seeding: {e}")
-
-    db_execute("""
-        INSERT INTO audio_assets (
-            id, name, filename, filepath, mime_type, source_type,
-            duration_seconds, file_size_bytes, audio_bytes, external_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (id) DO NOTHING;
-    """, (
-        "farm-alert-sample-id",
-        "High Alert Siren & Warning",
-        "farm_alert.wav",
-        fa_path,
-        "audio/wav",
-        "upload",
-        2.5,
-        len(fa_bytes) if fa_bytes else 80044,
-        fa_bytes,
-        "https://cvralbaxzcirpdnhgyus.supabase.co/storage/v1/object/public/farmcalling-audio/farm_alert.wav",
-        datetime.now().isoformat()
-    ))
+    try:
+        def_row = db_execute("SELECT value FROM settings WHERE key = 'default_audio_id';", fetch="one")
+        cur_def = (def_row.get("value") or "").strip() if def_row else ""
+        if cur_def in ("test1-sample-id", "farm-alert-sample-id") or (cur_def and not get_audio_asset(cur_def)):
+            latest_id = get_latest_custom_audio_id() or ""
+            db_execute("UPDATE settings SET value = ? WHERE key = 'default_audio_id';", (latest_id,))
+    except Exception as e:
+        logger.warning(f"Could not heal default_audio_id: {e}")
 
 # --- Settings Helpers ---
 
@@ -742,13 +694,15 @@ def add_audio_asset(
 
 def get_audio_assets(include_test_stubs: bool = False) -> List[Dict[str, Any]]:
     """Returns list of audible audio assets from Supabase PostgreSQL."""
-    filter_sql = "" if include_test_stubs else "WHERE (source_type = 'tts' OR file_size_bytes > 0 OR audio_bytes IS NOT NULL)"
+    base_filter = "WHERE id NOT IN ('test1-sample-id', 'farm-alert-sample-id') AND filename NOT IN ('test1.wav', 'farm_alert.wav')"
+    if not include_test_stubs:
+        base_filter += " AND (source_type = 'tts' OR file_size_bytes > 0 OR audio_bytes IS NOT NULL)"
     return db_execute(f"""
         SELECT id, name, filename, filepath, mime_type, source_type,
                duration_seconds, file_size_bytes, tts_text, tts_voice,
                external_url, (audio_bytes IS NOT NULL) AS has_audio_bytes, created_at
         FROM audio_assets
-        {filter_sql}
+        {base_filter}
         ORDER BY created_at DESC
     """, fetch="all") or []
 
@@ -777,38 +731,36 @@ def get_audio_bytes(asset_id: str) -> Optional[bytes]:
 def get_latest_custom_audio_id() -> Optional[str]:
     """
     Returns the ID of the most recently uploaded or recorded custom audio asset
-    persisted in Supabase PostgreSQL that is audible (> 500 bytes).
+    persisted in Supabase PostgreSQL.
     """
     row = db_execute("""
         SELECT id FROM audio_assets
-        WHERE source_type IN ('upload', 'recorded')
-          AND LOWER(name) NOT LIKE ?
+        WHERE (audio_bytes IS NOT NULL OR file_size_bytes > 0 OR source_type = 'tts')
           AND id NOT IN ('test1-sample-id', 'farm-alert-sample-id')
-          AND (audio_bytes IS NOT NULL OR file_size_bytes > 500)
         ORDER BY created_at DESC
         LIMIT 1
-    """, ("test %",), fetch="one")
+    """, fetch="one")
     return row["id"] if row else None
 
-def get_effective_audio_id(requested_id: Optional[str] = None) -> str:
+def get_effective_audio_id(requested_id: Optional[str] = None) -> Optional[str]:
     """
     Resolves the canonical audio asset ID to play for calls.
     Order of precedence:
     1. Explicit requested_id if provided, non-empty, and valid in DB
-    2. Persistent default_audio_id in settings if valid in DB and not a sample
+    2. Persistent default_audio_id in settings if valid in DB
     3. Most recent custom uploaded or recorded audio in Supabase
-    4. Fallback to 'test1-sample-id'
+    4. None (no prerecorded stock audios)
     """
     if requested_id:
         clean = str(requested_id).strip()
-        if clean and clean.lower() not in ("", "none", "[none / system default]"):
+        if clean and clean.lower() not in ("", "none", "[none / system default]", "test1-sample-id", "farm-alert-sample-id"):
             asset = get_audio_asset(clean)
             if asset:
                 return asset["id"]
 
     settings = get_settings()
     def_id = settings.get("default_audio_id", "").strip()
-    if def_id and def_id not in ("", "none", "test1-sample-id"):
+    if def_id and def_id not in ("", "none", "test1-sample-id", "farm-alert-sample-id"):
         asset = get_audio_asset(def_id)
         if asset:
             return asset["id"]
@@ -817,7 +769,7 @@ def get_effective_audio_id(requested_id: Optional[str] = None) -> str:
     if latest_custom:
         return latest_custom
 
-    return def_id if def_id else "test1-sample-id"
+    return None
 
 def delete_audio_asset(asset_id: str) -> bool:
     asset = get_audio_asset(asset_id)
@@ -830,10 +782,10 @@ def delete_audio_asset(asset_id: str) -> bool:
         except Exception:
             pass
     db_execute("DELETE FROM audio_assets WHERE id = ?", (asset["id"],))
-    # If the deleted asset was the default_audio_id, update to latest custom or fallback
+    # If the deleted asset was the default_audio_id, update to latest custom or empty
     settings = get_settings()
     if settings.get("default_audio_id") == asset["id"]:
-        new_def = get_latest_custom_audio_id() or "test1-sample-id"
+        new_def = get_latest_custom_audio_id() or ""
         update_settings({"default_audio_id": new_def})
     return True
 
@@ -1315,6 +1267,34 @@ def get_contact_groups() -> List[str]:
     rows = db_execute("SELECT DISTINCT group_tag FROM contacts WHERE group_tag IS NOT NULL AND group_tag != ''", fetch="all") or []
     groups = [r["group_tag"] for r in rows if r.get("group_tag")]
     return sorted(list(set(groups)))
+
+def format_vobiz_recipients(numbers: Any) -> str:
+    """
+    Normalizes phone numbers into canonical Vobiz bulk-dial format separated by '<'.
+    Accepts string, list, or tuple.
+    Handles delimiters: '<', ',', ';', newlines, carriage returns.
+    Strips whitespace and ensures unique numbers preserving order.
+    """
+    if not numbers:
+        return ""
+    if isinstance(numbers, str):
+        items = [numbers]
+    else:
+        items = list(numbers)
+
+    cleaned = []
+    seen = set()
+    for item in items:
+        if not item:
+            continue
+        raw_parts = str(item).replace("\r", "\n").replace(";", "\n").replace(",", "\n").replace("<", "\n").split("\n")
+        for part in raw_parts:
+            num = part.strip()
+            if num and num not in seen:
+                seen.add(num)
+                cleaned.append(num)
+
+    return "<".join(cleaned)
 
 # Initialize database schema on startup
 init_db()

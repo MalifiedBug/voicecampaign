@@ -15,7 +15,9 @@ from database import (
     get_audio_asset,
     get_effective_audio_id,
     get_settings,
-    get_contacts
+    get_contacts,
+    get_contact_groups,
+    format_vobiz_recipients
 )
 from scheduler import trigger_call_now
 
@@ -57,32 +59,88 @@ with left_col:
     if not configured:
         st.warning("⚠️ Vobiz credentials or Outbound Caller ID not configured. Please visit **Settings** to set up your Auth ID and phone number.")
 
-    # Pre-populate if passed from Contacts Directory
-    default_dial_num = st.session_state.pop("instant_dial_number", "")
+    # Check for incoming numbers from Contacts Directory
+    passed_dial_num = st.session_state.pop("instant_dial_number", "")
 
-    # Quick contact picker
-    all_contacts_quick = get_contacts(limit=100)
-    if all_contacts_quick:
-        with st.expander("👥 Pick from Contacts Directory", expanded=False):
-            c_quick_opts = {f"{c['name']} ({c['phone']})": c['phone'] for c in all_contacts_quick}
-            sel_c = st.selectbox("Select Contact", ["-- Choose Contact --"] + list(c_quick_opts.keys()))
-            if sel_c != "-- Choose Contact --":
-                default_dial_num = c_quick_opts[sel_c]
+    all_contacts_quick = get_contacts(limit=500)
+    has_contacts = len(all_contacts_quick) > 0
+
+    recipient_mode = st.radio(
+        "Recipient Selection Method",
+        ["👥 Select from Contacts Directory", "✏️ Enter Phone Number(s) Manually"] if has_contacts else ["✏️ Enter Phone Number(s) Manually"],
+        horizontal=True,
+        key="dash_recipient_mode"
+    )
+
+    compiled_numbers = ""
+
+    if has_contacts and recipient_mode == "👥 Select from Contacts Directory":
+        groups = get_contact_groups()
+        col_grp_f, col_quick_btns = st.columns([1.5, 1.5])
+        with col_grp_f:
+            selected_grp = st.selectbox("Filter by Group", ["All Groups"] + groups, key="dash_contact_grp") if groups else "All Groups"
+
+        filtered_c = all_contacts_quick if selected_grp == "All Groups" else [c for c in all_contacts_quick if c.get("group_tag") == selected_grp]
+        contact_map = {f"{c['name']} ({c['phone']})" + (f" • {c.get('group_tag')}" if c.get("group_tag") else ""): c['phone'] for c in filtered_c}
+
+        # Initialize session state for selected contact labels
+        if "dash_selected_contact_labels" not in st.session_state:
+            st.session_state["dash_selected_contact_labels"] = []
+
+        with col_quick_btns:
+            st.write("")
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                if st.button("Select All", key="dash_sel_all_btn", use_container_width=True):
+                    st.session_state["dash_selected_contact_labels"] = list(contact_map.keys())
+                    st.rerun()
+            with col_b2:
+                if st.button("Clear", key="dash_clear_sel_btn", use_container_width=True):
+                    st.session_state["dash_selected_contact_labels"] = []
+                    st.rerun()
+
+        chosen_labels = st.multiselect(
+            "Select Recipient Contact(s)",
+            options=list(contact_map.keys()),
+            default=[l for l in st.session_state["dash_selected_contact_labels"] if l in contact_map],
+            key="dash_contact_multiselect",
+            placeholder="Search by contact name or phone number..."
+        )
+        st.session_state["dash_selected_contact_labels"] = chosen_labels
+
+        chosen_phones = [contact_map[lbl] for lbl in chosen_labels if lbl in contact_map]
+        compiled_numbers = format_vobiz_recipients(chosen_phones)
+
+        if chosen_phones:
+            if len(chosen_phones) == 1:
+                st.success(f"🎯 **1 Recipient Selected:** `{chosen_phones[0]}`")
+            else:
+                st.success(f"🎯 **{len(chosen_phones)} Recipients Selected for Bulk Dispatch:** `{compiled_numbers[:65]}{'...' if len(compiled_numbers) > 65 else ''}`")
+        else:
+            st.caption("ℹ️ Select one or multiple contacts above to dial.")
 
     with st.form("instant_call_form", clear_on_submit=False):
-        to_phone = st.text_input(
-            "Destination Phone Number (E.164 format)",
-            value=default_dial_num,
-            placeholder="+919876543210 or 14155551234",
-            help="Include country code, e.g. +91 for India or +1 for US/Canada."
-        )
+        if recipient_mode == "👥 Select from Contacts Directory" and has_contacts:
+            to_phone = st.text_input(
+                "Destination Phone Number(s) (Formatted for Vobiz)",
+                value=compiled_numbers,
+                placeholder="+919876543210 (or separate multiple with <)",
+                help="Vobiz accepts single numbers or bulk recipients separated by '<' (e.g. +919876543210<+919876543211)"
+            )
+        else:
+            to_phone = st.text_input(
+                "Destination Phone Number(s) (E.164 format)",
+                value=passed_dial_num,
+                placeholder="+919876543210 or separate multiple with < or comma",
+                help="Enter one or more numbers. Multiple numbers can be separated by '<' or comma."
+            )
 
         audio_assets = get_audio_assets()
         effective_aid = get_effective_audio_id()
         audio_options = {}
 
         # Pre-select currently active default prompt at the very top
-        eff_asset = get_audio_asset(effective_aid)
+        eff_asset = get_audio_asset(effective_aid) if effective_aid else None
         if eff_asset:
             eff_label = f"⭐ Active Prompt: {eff_asset['name']} ({eff_asset['source_type'].upper()})"
             audio_options[eff_label] = eff_asset["id"]
@@ -94,7 +152,7 @@ with left_col:
                 audio_options[label] = a["id"]
 
         if not audio_options:
-            audio_options = {"Default System Audio": "test1-sample-id"}
+            audio_options = {"No custom audio recorded (Use TTS or record in Audio Studio)": ""}
 
         selected_audio_label = st.selectbox("Select Audio Prompt to Play", list(audio_options.keys()))
         selected_audio_id = audio_options[selected_audio_label]
@@ -111,19 +169,21 @@ with left_col:
 
         loops = st.number_input("Audio Repeat Count (Loop)", min_value=1, max_value=10, value=1, help="Number of times to play audio before cutting call (1 - 10)")
 
-        submitted = st.form_submit_button("🚀 Dial Number Now", width="stretch", type="primary")
+        submitted = st.form_submit_button("🚀 Dial Recipient(s) Now", width="stretch", type="primary")
 
     if submitted:
-        if not to_phone.strip():
-            st.error("Please enter a valid destination phone number.")
+        clean_to = format_vobiz_recipients(to_phone)
+        if not clean_to:
+            st.error("Please enter or select at least one valid destination phone number.")
         else:
-            with st.status("Initiating Outbound Call via Vobiz API...", expanded=True) as status_box:
+            dest_count = len(clean_to.split("<"))
+            with st.status(f"Initiating Outbound Call ({dest_count} recipient{'s' if dest_count > 1 else ''}) via Vobiz API...", expanded=True) as status_box:
                 st.write(f"Connecting to Vobiz API using Caller ID: `{settings.get('caller_id')}`")
-                st.write(f"Dialing destination: `{to_phone.strip()}`")
+                st.write(f"Dialing destination(s): `{clean_to[:70]}{'...' if len(clean_to) > 70 else ''}`")
 
                 p_mode = "tts" if play_mode == "Custom Text-to-Speech (TTS)" else "audio"
                 success, msg, data = trigger_call_now(
-                    to_number=to_phone.strip(),
+                    to_number=clean_to,
                     audio_id=selected_audio_id,
                     play_mode=p_mode,
                     tts_message=tts_message,
@@ -135,7 +195,7 @@ with left_col:
                     call_uuid = data.get("request_uuid") or data.get("api_id")
                     st.write(f"Call UUID: `{call_uuid}`")
                     st.write("Vobiz accepted the request. Destination will ring shortly.")
-                    status_box.update(label="✅ Call Dispatched Successfully!", state="complete", expanded=False)
+                    status_box.update(label=f"✅ Call Dispatched to {dest_count} Recipient(s)!", state="complete", expanded=False)
                     st.success(f"Success! {msg}")
                 else:
                     st.write(f"Error details: {msg}")
