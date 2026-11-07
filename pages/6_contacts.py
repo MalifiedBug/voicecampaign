@@ -49,11 +49,12 @@ if "selected_contact_phones" not in st.session_state:
     st.session_state["selected_contact_phones"] = []
 
 # Top-level KPI Telemetry
-total_contacts = get_contacts_count()
-groups = fetch_groups_cached()
-all_contacts = fetch_contacts_cached()
-unique_phones = len(set(c["phone"] for c in all_contacts if c.get("phone")))
-vcf_imports = len([c for c in all_contacts if c.get("source") == "vcf"])
+with st.spinner("Loading contacts & audience directory from Supabase..."):
+    total_contacts = get_contacts_count()
+    groups = fetch_groups_cached()
+    all_contacts = fetch_contacts_cached()
+    unique_phones = len(set(c["phone"] for c in all_contacts if c.get("phone")))
+    vcf_imports = len([c for c in all_contacts if c.get("source") == "vcf"])
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
@@ -237,11 +238,12 @@ with tab_directory:
             st.cache_data.clear()
             st.rerun()
 
-    contacts = get_contacts(
-        search_query=search_query.strip() or None,
-        group_filter=selected_group if selected_group != "All" else None,
-        limit=2000
-    )
+    with st.spinner("Fetching contacts from database..."):
+        contacts = get_contacts(
+            search_query=search_query.strip() or None,
+            group_filter=selected_group if selected_group != "All" else None,
+            limit=2000
+        )
 
     if not contacts:
         if search_query or selected_group != "All":
@@ -466,15 +468,16 @@ with tab_manual:
             if not normalized_p:
                 st.error("Please enter a valid phone number (at least 7 to 15 digits).")
             else:
-                cid = create_contact(
-                    name=m_name.strip(),
-                    phone=normalized_p,
-                    email=m_email.strip() or None,
-                    organization=m_org.strip() or None,
-                    notes=m_notes.strip() or None,
-                    group_tag=m_group.strip() or "General",
-                    source="manual"
-                )
+                with st.spinner(f"Saving {m_name.strip()} to database..."):
+                    cid = create_contact(
+                        name=m_name.strip(),
+                        phone=normalized_p,
+                        email=m_email.strip() or None,
+                        organization=m_org.strip() or None,
+                        notes=m_notes.strip() or None,
+                        group_tag=m_group.strip() or "General",
+                        source="manual"
+                    )
                 st.success(f"🎉 Contact **{m_name.strip()}** (`{normalized_p}`) saved successfully!")
                 st.cache_data.clear()
                 st.rerun()

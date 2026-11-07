@@ -24,7 +24,8 @@ with col_db2:
         st.rerun()
 
 # Fetch logs directly from database
-logs = get_call_logs(limit=300)
+with st.spinner("Retrieving call history and CDR records from Supabase..."):
+    logs = get_call_logs(limit=300)
 
 if not logs:
     st.info("No outbound calls recorded yet in the database. Place an instant call or run a schedule to see real-time DB telemetry.")

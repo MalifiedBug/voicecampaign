@@ -238,8 +238,11 @@
 
       <!-- Contacts Directory Table -->
       <div class="card p-6 rounded-xl space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold flex items-center"><i data-feather="users" class="w-5 h-5 mr-2 text-emerald-400"></i> Contacts Directory</h2>
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div class="flex items-center space-x-3">
+            <h2 class="text-lg font-semibold flex items-center"><i data-feather="users" class="w-5 h-5 mr-2 text-emerald-400"></i> Contacts Directory</h2>
+            <span id="contact-count-badge" class="text-xs text-blue-300 bg-blue-950/60 px-2.5 py-1 rounded-full border border-blue-800/60 font-mono">Loading...</span>
+          </div>
           <div class="flex items-center space-x-3">
             <button onclick="populateCampaignWithContacts()" class="btn-primary text-xs px-3 py-1.5 rounded-lg flex items-center">
               <i data-feather="send" class="w-3.5 h-3.5 mr-1.5"></i> Dial All in New Campaign
@@ -247,10 +250,21 @@
             <button onclick="clearAllContacts()" class="border border-red-800 text-red-400 hover:bg-red-950 text-xs px-3 py-1.5 rounded-lg">
               Clear All
             </button>
-            <button onclick="loadContacts()" class="text-xs text-blue-400 hover:underline">Refresh</button>
+            <button onclick="loadContacts()" class="text-xs text-blue-400 hover:text-blue-300 flex items-center">
+              <i data-feather="refresh-cw" class="w-3.5 h-3.5 mr-1"></i> Refresh
+            </button>
           </div>
         </div>
-        <div id="contacts-table-container" class="overflow-x-auto">
+
+        <!-- Filter & Search Bar with Instant Loading Feedback -->
+        <div class="flex flex-col sm:flex-row items-center gap-3 pt-1">
+          <div class="relative flex-1 w-full">
+            <input type="text" id="contact-search-input" oninput="debounceContactSearch()" placeholder="🔍 Search contacts by name, phone (+91...), organization, group..." class="w-full bg-[#1e293b] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none">
+          </div>
+          <button onclick="clearContactSearch()" class="text-xs text-gray-400 hover:text-white px-3 py-2 bg-slate-800 rounded-lg border border-slate-700">Clear</button>
+        </div>
+
+        <div id="contacts-table-container" class="overflow-x-auto min-h-[120px]">
           <p class="text-xs text-gray-500">Loading contacts...</p>
         </div>
       </div>
@@ -387,10 +401,44 @@
 
     let loadedContactsList = [];
 
+    function showLoadingSkeleton(containerId, text = "Loading data from database...") {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      container.innerHTML = `
+        <div class="flex flex-col items-center justify-center py-8 px-4 space-y-3 bg-slate-900/40 rounded-xl border border-slate-800/60">
+          <div class="w-7 h-7 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+          <div class="text-center">
+            <p class="text-xs text-blue-300 font-medium">${text}</p>
+            <p class="text-[10px] text-gray-500 mt-0.5">Fetching latest records from cloud storage & database...</p>
+          </div>
+          <div class="w-full max-w-sm space-y-2 pt-1 opacity-40">
+            <div class="h-2.5 bg-slate-700 rounded-full animate-pulse w-full"></div>
+            <div class="h-2.5 bg-slate-700 rounded-full animate-pulse w-4/5 mx-auto"></div>
+          </div>
+        </div>
+      `;
+    }
+
+    let contactSearchTimer = null;
+    function debounceContactSearch() {
+      clearTimeout(contactSearchTimer);
+      contactSearchTimer = setTimeout(() => {
+        const q = (document.getElementById('contact-search-input')?.value || '').trim();
+        loadContacts(q);
+      }, 250);
+    }
+
+    function clearContactSearch() {
+      const inp = document.getElementById('contact-search-input');
+      if (inp) inp.value = '';
+      loadContacts('');
+    }
+
     async function uploadVcfFile() {
       const fileInput = document.getElementById('vcf-file-input');
       const groupTag = document.getElementById('vcf-group-tag').value.trim() || 'Bulk-Import';
       const statusBox = document.getElementById('vcf-upload-status');
+      const uploadBtn = document.querySelector('button[onclick="uploadVcfFile()"]');
 
       if (!fileInput.files || fileInput.files.length === 0) {
         alert('Please select a .vcf file to upload.');
@@ -411,9 +459,18 @@
       formData.append('default_country_code', '+91');
       formData.append('update_duplicates', 'true');
 
-      statusBox.className = 'text-xs p-3 rounded-lg bg-blue-950 text-blue-300 border border-blue-800';
-      statusBox.innerText = `Parsing and importing contacts from ${file.name}...`;
+      statusBox.className = 'text-xs p-3 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800 flex items-center space-x-2';
+      statusBox.innerHTML = `
+        <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+        <span>Parsing and importing contacts from <strong>${file.name}</strong> (${Math.round(file.size/1024)} KB)...</span>
+      `;
       statusBox.classList.remove('hidden');
+
+      const origBtnHtml = uploadBtn ? uploadBtn.innerHTML : '';
+      if (uploadBtn) {
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = '<div class="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div> Importing...';
+      }
 
       try {
         const res = await fetch('/api/contacts/upload-vcf', {
@@ -428,7 +485,7 @@
         const data = await res.json();
         if (data.success) {
           statusBox.className = 'text-xs p-3 rounded-lg bg-emerald-950 text-emerald-400 border border-emerald-800';
-          statusBox.innerText = `Success! Parsed ${data.total_parsed} contacts. Added: ${data.summary.added}, Updated: ${data.summary.updated}, Skipped: ${data.summary.skipped}.`;
+          statusBox.innerText = `✅ Success! Parsed ${data.total_parsed} contacts. Added: ${data.summary.added}, Updated: ${data.summary.updated}, Skipped: ${data.summary.skipped}.`;
           loadContacts();
           fileInput.value = '';
         } else {
@@ -438,18 +495,41 @@
       } catch (err) {
         statusBox.className = 'text-xs p-3 rounded-lg bg-rose-950 text-rose-400 border border-rose-800';
         statusBox.innerText = 'Error uploading .vcf file: ' + err.message;
+      } finally {
+        if (uploadBtn) {
+          uploadBtn.disabled = false;
+          uploadBtn.innerHTML = origBtnHtml;
+        }
       }
     }
 
-    async function loadContacts() {
+    async function loadContacts(searchQuery = '') {
       const container = document.getElementById('contacts-table-container');
+      const badge = document.getElementById('contact-count-badge');
+      if (badge) badge.innerHTML = '<span class="animate-pulse text-blue-400">Loading...</span>';
+      showLoadingSkeleton('contacts-table-container', searchQuery ? `Searching contacts for "${searchQuery}"...` : 'Loading contacts from Supabase database...');
+
       try {
-        const res = await fetch('/api/contacts');
+        const url = searchQuery ? `/api/contacts?search=${encodeURIComponent(searchQuery)}` : '/api/contacts';
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         loadedContactsList = data.contacts || [];
 
+        if (badge) {
+          badge.innerText = `${loadedContactsList.length} contact(s)` + (searchQuery ? ` matching "${searchQuery}"` : '');
+        }
+
         if (loadedContactsList.length === 0) {
-          container.innerHTML = '<p class="text-xs text-gray-500 py-4 text-center">No contacts stored yet. Upload a .vcf file above to populate contacts.</p>';
+          container.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-8 text-center space-y-2 bg-slate-900/30 rounded-xl border border-slate-800/40">
+              <i data-feather="users" class="w-7 h-7 text-gray-600 mb-1"></i>
+              <p class="text-xs text-gray-300 font-medium">${searchQuery ? `No contacts matching "${searchQuery}".` : 'No contacts stored in directory yet.'}</p>
+              <p class="text-[11px] text-gray-500">${searchQuery ? 'Try clearing your search term or searching by phone number.' : 'Upload a .vcf file above to import all your phone contacts in seconds.'}</p>
+              ${searchQuery ? `<button onclick="clearContactSearch()" class="mt-2 text-xs text-blue-400 hover:underline">Clear Search</button>` : ''}
+            </div>
+          `;
+          feather.replace();
           return;
         }
 
@@ -469,8 +549,15 @@
         });
         html += '</tbody></table>';
         container.innerHTML = html;
+        feather.replace();
       } catch (err) {
-        container.innerHTML = '<p class="text-xs text-rose-400">Failed to load contacts.</p>';
+        if (badge) badge.innerText = 'Error';
+        container.innerHTML = `
+          <div class="p-4 bg-rose-950/40 border border-rose-800/80 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+            <span>⚠️ Failed to load contacts from database: ${err.message}</span>
+            <button onclick="loadContacts()" class="px-3 py-1 bg-rose-900 hover:bg-rose-800 text-white rounded text-xs">Retry</button>
+          </div>
+        `;
       }
     }
 
@@ -511,31 +598,42 @@
     }
 
     async function loadDashboard() {
+      showLoadingSkeleton('recent-calls-list', 'Loading campaign calls from database...');
+      ['stat-total', 'stat-completed', 'stat-failed', 'stat-duration', 'stat-schedules'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<span class="text-xs text-blue-400 font-mono animate-pulse">...</span>';
+      });
+
       try {
         const res = await fetch('/api/stats');
         const data = await res.json();
-        document.getElementById('stat-total').innerText = data.total_calls;
-        document.getElementById('stat-completed').innerText = data.completed_calls;
-        document.getElementById('stat-failed').innerText = data.failed_calls;
-        document.getElementById('stat-duration').innerText = data.total_duration_sec + 's';
-        document.getElementById('stat-schedules').innerText = data.active_schedules;
+        document.getElementById('stat-total').innerText = data.total_calls ?? 0;
+        document.getElementById('stat-completed').innerText = data.completed_calls ?? 0;
+        document.getElementById('stat-failed').innerText = data.failed_calls ?? 0;
+        document.getElementById('stat-duration').innerText = (data.total_duration_sec ?? 0) + 's';
+        document.getElementById('stat-schedules').innerText = data.active_schedules ?? 0;
 
         const callsRes = await fetch('/api/calls?limit=8');
         const calls = await callsRes.json();
         const container = document.getElementById('recent-calls-list');
-        if (calls.length === 0) {
-          container.innerHTML = '<p class="text-xs text-gray-500">No calls logged yet.</p>';
+        if (!calls || calls.length === 0) {
+          container.innerHTML = `
+            <div class="py-6 text-center text-xs text-gray-500 bg-slate-900/30 rounded-xl border border-slate-800/40">
+              <p>No calls logged in database yet.</p>
+              <p class="text-[10px] text-gray-600 mt-0.5">Dispatched campaign calls will automatically show here.</p>
+            </div>
+          `;
         } else {
           container.innerHTML = calls.map(c => `
-            <div class="flex items-center justify-between p-3 bg-[#1e293b] rounded-lg text-xs">
+            <div class="flex items-center justify-between p-3 bg-[#1e293b] rounded-lg text-xs hover:bg-[#253347] transition">
               <div>
                 <span class="font-medium text-white">${c.to_number}</span>
                 <span class="text-gray-400 ml-2">(${c.schedule_name || 'Instant'})</span>
-                <p class="text-[10px] text-gray-500">${c.initiated_at.replace('T', ' ').slice(0, 19)}</p>
+                <p class="text-[10px] text-gray-500">${(c.initiated_at || '').replace('T', ' ').slice(0, 19)}</p>
               </div>
               <div class="text-right">
-                <span class="px-2 py-0.5 rounded text-[10px] ${c.status === 'completed' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-300'}">${c.status.toUpperCase()}</span>
-                <p class="text-[10px] text-gray-400 mt-1">${c.duration}s</p>
+                <span class="px-2 py-0.5 rounded text-[10px] ${c.status === 'completed' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-300'}">${(c.status || 'unknown').toUpperCase()}</span>
+                <p class="text-[10px] text-gray-400 mt-1">${c.duration || 0}s</p>
               </div>
             </div>
           `).join('');
@@ -545,6 +643,8 @@
         loadAudioDropdowns();
       } catch (e) {
         console.error(e);
+        const container = document.getElementById('recent-calls-list');
+        if (container) container.innerHTML = '<p class="text-xs text-rose-400 py-3 text-center">Failed to load recent activity.</p>';
       }
     }
 
@@ -973,14 +1073,25 @@
     }
 
     async function loadSchedules() {
-      const res = await fetch('/api/schedules');
-      const data = await res.json();
       const box = document.getElementById('schedules-table');
-      if (data.length === 0) {
-        box.innerHTML = '<p class="text-xs text-gray-500">No active campaigns found.</p>';
-        return;
-      }
-      box.innerHTML = `
+      showLoadingSkeleton('schedules-table', 'Loading campaigns & schedules from database...');
+
+      try {
+        const res = await fetch('/api/schedules');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data || data.length === 0) {
+          box.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-8 text-center space-y-2 bg-slate-900/30 rounded-xl border border-slate-800/40">
+              <i data-feather="calendar" class="w-7 h-7 text-gray-600 mb-1"></i>
+              <p class="text-xs text-gray-300 font-medium">No active campaigns or schedules found.</p>
+              <p class="text-[11px] text-gray-500">Create an automated schedule or broadcast campaign above to start calling.</p>
+            </div>
+          `;
+          feather.replace();
+          return;
+        }
+        box.innerHTML = `
         <table class="w-full text-left text-xs">
           <thead class="border-b border-gray-800 text-gray-400">
             <tr>
@@ -1018,6 +1129,15 @@
           </tbody>
         </table>
       `;
+      } catch (err) {
+        box.innerHTML = `
+          <div class="p-4 bg-rose-950/40 border border-rose-800/80 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+            <span>⚠️ Failed to load schedules from database: ${err.message}</span>
+            <button onclick="loadSchedules()" class="px-3 py-1 bg-rose-900 hover:bg-rose-800 text-white rounded text-xs">Retry</button>
+          </div>
+        `;
+      }
+    }
     }
 
     async function runScheduleNow(id) {
@@ -1334,15 +1454,25 @@
     }
 
     async function loadAudioLibrary() {
+      const list = document.getElementById('audio-library-list');
+      showLoadingSkeleton('audio-library-list', 'Loading audio library from Supabase S3 cloud storage...');
+
       try {
         const [aRes, sRes] = await Promise.all([fetch('/api/audio'), fetch('/api/settings')]);
+        if (!aRes.ok) throw new Error(`Audio API HTTP ${aRes.status}`);
         const data = await aRes.json();
         const settings = await sRes.json();
         const currentDefault = settings.default_audio_id;
 
-        const list = document.getElementById('audio-library-list');
         if (!data || data.length === 0) {
-          list.innerHTML = '<p class="text-xs text-gray-500">No audio assets in library.</p>';
+          list.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-8 text-center space-y-2 bg-slate-900/30 rounded-xl border border-slate-800/40">
+              <i data-feather="music" class="w-7 h-7 text-gray-600 mb-1"></i>
+              <p class="text-xs text-gray-300 font-medium">No audio assets in your library.</p>
+              <p class="text-[11px] text-gray-500">Record a voice announcement or upload an MP3/WAV track above.</p>
+            </div>
+          `;
+          feather.replace();
           return;
         }
 
@@ -1373,7 +1503,12 @@
           `;
         }).join('');
       } catch (err) {
-        console.error('Error loading audio library:', err);
+        list.innerHTML = `
+          <div class="p-4 bg-rose-950/40 border border-rose-800/80 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+            <span>⚠️ Failed to load audio library: ${err.message}</span>
+            <button onclick="loadAudioLibrary()" class="px-3 py-1 bg-rose-900 hover:bg-rose-800 text-white rounded text-xs">Retry</button>
+          </div>
+        `;
       }
     }
 
@@ -1385,14 +1520,25 @@
     }
 
     async function loadCallHistory() {
-      const res = await fetch('/api/calls?limit=50');
-      const data = await res.json();
       const box = document.getElementById('call-history-table');
-      if (data.length === 0) {
-        box.innerHTML = '<p class="text-xs text-gray-500">No calls in history.</p>';
-        return;
-      }
-      box.innerHTML = `
+      showLoadingSkeleton('call-history-table', 'Loading call records and CDR history...');
+
+      try {
+        const res = await fetch('/api/calls?limit=50');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data || data.length === 0) {
+          box.innerHTML = `
+            <div class="flex flex-col items-center justify-center py-8 text-center space-y-2 bg-slate-900/30 rounded-xl border border-slate-800/40">
+              <i data-feather="phone-call" class="w-7 h-7 text-gray-600 mb-1"></i>
+              <p class="text-xs text-gray-300 font-medium">No calls in history yet.</p>
+              <p class="text-[11px] text-gray-500">Every placed call will be automatically tracked with live status and CDR logs.</p>
+            </div>
+          `;
+          feather.replace();
+          return;
+        }
+        box.innerHTML = `
         <table class="w-full text-left text-xs">
           <thead class="border-b border-gray-800 text-gray-400">
             <tr>
@@ -1408,18 +1554,26 @@
           <tbody class="divide-y divide-gray-800">
             ${data.map(c => `
               <tr>
-                <td class="py-2 font-mono text-[11px] text-gray-400">${c.initiated_at.replace('T', ' ').slice(0, 19)}</td>
+                <td class="py-2 font-mono text-[11px] text-gray-400">${(c.initiated_at || '').replace('T', ' ').slice(0, 19)}</td>
                 <td class="font-medium text-white">${c.to_number}</td>
-                <td>${c.from_number}</td>
+                <td>${c.from_number || '—'}</td>
                 <td>${c.schedule_name || 'Instant'}</td>
-                <td><span class="px-2 py-0.5 rounded text-[10px] ${c.status === 'completed' ? 'bg-emerald-950 text-emerald-400' : 'bg-gray-800 text-gray-400'}">${c.status}</span></td>
-                <td>${c.duration}s</td>
+                <td><span class="px-2 py-0.5 rounded text-[10px] ${c.status === 'completed' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-gray-800 text-gray-400'}">${c.status}</span></td>
+                <td>${c.duration || 0}s</td>
                 <td>${c.hangup_cause || '-'}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       `;
+      } catch (err) {
+        box.innerHTML = `
+          <div class="p-4 bg-rose-950/40 border border-rose-800/80 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+            <span>⚠️ Failed to load call history: ${err.message}</span>
+            <button onclick="loadCallHistory()" class="px-3 py-1 bg-rose-900 hover:bg-rose-800 text-white rounded text-xs">Retry</button>
+          </div>
+        `;
+      }
     }
 
     async function loadSettings() {

@@ -25,7 +25,8 @@ st.title("📞 Telephony Operations Dashboard")
 st.caption("Monitor automated outbound campaigns, inspect real-time metrics, and trigger instant calls.")
 
 # 1. KPI Metrics
-stats = get_call_stats()
+with st.spinner("Loading telemetry metrics and live call stats..."):
+    stats = get_call_stats()
 col1, col2, col3, col4, col5 = st.columns(5)
 
 total_calls = stats["total_calls"]
@@ -62,7 +63,8 @@ with left_col:
     # Check for incoming numbers from Contacts Directory
     passed_dial_num = st.session_state.pop("instant_dial_number", "")
 
-    all_contacts_quick = get_contacts(limit=500)
+    with st.spinner("Loading contacts directory..."):
+        all_contacts_quick = get_contacts(limit=500)
     has_contacts = len(all_contacts_quick) > 0
 
     recipient_mode = st.radio(
@@ -204,7 +206,8 @@ with left_col:
 
 with right_col:
     st.subheader("📅 Active Schedules")
-    active_scheds = get_schedules(status_filter="active")
+    with st.spinner("Fetching active campaigns..."):
+        active_scheds = get_schedules(status_filter="active")
 
     if not active_scheds:
         st.info("No active schedules found. Create your first automated campaign in the **Schedules** page.")
@@ -234,7 +237,8 @@ with col_log_h2:
         st.cache_data.clear()
         st.rerun()
 
-logs = get_call_logs(limit=15)
+with st.spinner("Fetching latest call telemetry..."):
+    logs = get_call_logs(limit=15)
 if not logs:
     st.info("No call logs recorded in database yet. Dial a number above or schedule a campaign to see live records.")
 else:

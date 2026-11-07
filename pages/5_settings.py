@@ -381,13 +381,14 @@ with tab_db:
     st.markdown("#### Cloud Tables & Records in Database")
 
     try:
-        schedules_cnt = len(get_schedules())
-        audio_cnt = len(get_audio_assets())
-        call_row = db_execute("SELECT count(*) as c FROM call_logs", fetch="one")
-        call_cnt = call_row["c"] if call_row else 0
-        contacts_cnt = get_contacts_count()
-        sett_row = db_execute("SELECT count(*) as c FROM settings", fetch="one")
-        sett_cnt = sett_row["c"] if sett_row else 0
+        with st.spinner("Fetching cloud table telemetry from Supabase..."):
+            schedules_cnt = len(get_schedules())
+            audio_cnt = len(get_audio_assets())
+            call_row = db_execute("SELECT count(*) as c FROM call_logs", fetch="one")
+            call_cnt = call_row["c"] if call_row else 0
+            contacts_cnt = get_contacts_count()
+            sett_row = db_execute("SELECT count(*) as c FROM settings", fetch="one")
+            sett_cnt = sett_row["c"] if sett_row else 0
 
         t1, t2, t3, t4, t5 = st.columns(5)
         with t1:

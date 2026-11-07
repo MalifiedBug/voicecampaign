@@ -93,8 +93,9 @@ with st.expander("➕ Create New Call Schedule", expanded=True):
     if "campaign_default_name" in st.session_state:
         st.session_state["sched_default_name"] = st.session_state.pop("campaign_default_name")
 
-    all_contacts = get_contacts(limit=2000)
-    groups = get_contact_groups()
+    with st.spinner("Loading contacts directory..."):
+        all_contacts = get_contacts(limit=2000)
+        groups = get_contact_groups()
     has_contacts = len(all_contacts) > 0
 
     tab_c, tab_m, tab_v = st.tabs([
@@ -449,7 +450,8 @@ with st.container(border=True):
 
 st.subheader("📋 Scheduled Campaigns")
 
-schedules = fetch_schedules()
+with st.spinner("Fetching active campaigns from database..."):
+    schedules = fetch_schedules()
 
 if not schedules:
     st.info("No schedules found. Create one above to get started.")

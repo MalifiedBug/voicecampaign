@@ -154,7 +154,8 @@ with col_lib_ref:
     if st.button("🔄 Refresh Library", use_container_width=True):
         st.rerun()
 
-assets = get_audio_assets()
+with st.spinner("Loading audio tracks from Supabase S3..."):
+    assets = get_audio_assets()
 
 if not assets:
     st.info("No audio tracks in your library yet. Record or upload one above.")
