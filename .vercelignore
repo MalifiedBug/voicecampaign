@@ -11,6 +11,6 @@ data/audio/*
 tests/
 *.py
 pages/
-requirements.txt
+requirements*.txt
 
 
