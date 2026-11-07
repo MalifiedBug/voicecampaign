@@ -9,4 +9,8 @@ __pycache__
 data/*.db
 data/audio/*
 tests/
+*.py
+pages/
+requirements.txt
+
 
