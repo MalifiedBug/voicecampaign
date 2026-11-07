@@ -63,14 +63,14 @@ export async function makeOutboundCall(params: {
   const answerUrl = `${baseUrl}/api/webhook/answer?schedule_id=${encodeURIComponent(params.scheduleId || '')}&audio_id=${encodeURIComponent(params.audioId || '')}&loop=${params.loopCount || 1}`;
   const hangupUrl = `${baseUrl}/api/webhook/hangup`;
 
-  const vobizEndpoint = `https://api.vobiz.ai/v1/Account/${authId}/Call/`;
+  const vobizEndpoint = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
   const basicAuth = Buffer.from(`${authId}:${authToken}`).toString('base64');
 
   const payload: Record<string, any> = {
     from: callerId,
     to: formattedTo,
     answer_url: answerUrl,
-    answer_method: 'GET',
+    answer_method: 'POST',
     hangup_url: hangupUrl,
     hangup_method: 'POST',
     ring_timeout: parseInt(settings.ring_timeout || '45', 10),
@@ -80,6 +80,8 @@ export async function makeOutboundCall(params: {
   const response = await fetch(vobizEndpoint, {
     method: 'POST',
     headers: {
+      'X-Auth-ID': authId,
+      'X-Auth-Token': authToken,
       Authorization: `Basic ${basicAuth}`,
       'Content-Type': 'application/json',
     },
