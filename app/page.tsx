@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Phone,
   PhoneCall,
+  PhoneForwarded,
   Users,
   Mic,
   Calendar,
@@ -83,9 +84,18 @@ export default function VoiceCampaignDashboard() {
       const res = await fetch(`/api/contacts?${queryParams.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setContacts(data);
-        const grps = Array.from(new Set(data.map((c: any) => c.group_tag).filter(Boolean))) as string[];
-        setGroups(grps);
+        if (Array.isArray(data)) {
+          setContacts(data);
+          setTotalContacts(data.length);
+          const grps = Array.from(new Set(data.map((c: any) => c.group_tag).filter(Boolean))) as string[];
+          setGroups(grps);
+        } else if (data.contacts) {
+          setContacts(data.contacts);
+          setTotalContacts(data.total || data.contacts.length);
+          if (data.groups && Array.isArray(data.groups)) {
+            setGroups(data.groups);
+          }
+        }
       }
     } finally {
       setLoadingContacts(false);
@@ -173,6 +183,9 @@ export default function VoiceCampaignDashboard() {
   };
 
   // ----------------- CONTACTS STATE -----------------
+  const [totalContacts, setTotalContacts] = useState(0);
+  const [selectAllAcrossCrm, setSelectAllAcrossCrm] = useState(false);
+  const [isDeduplicating, setIsDeduplicating] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
   const [selectedGroup, setSelectedGroup] = useState('All Groups');
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
@@ -185,70 +198,156 @@ export default function VoiceCampaignDashboard() {
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setContactSearch(val);
+    setSelectAllAcrossCrm(false);
     fetchContacts(val, selectedGroup);
   };
 
   const handleGroupFilter = (grp: string) => {
     setSelectedGroup(grp);
+    setSelectAllAcrossCrm(false);
     fetchContacts(contactSearch, grp);
   };
 
   const toggleSelectContact = (id: string) => {
-    setSelectedContactIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    if (selectAllAcrossCrm) {
+      setSelectAllAcrossCrm(false);
+      setSelectedContactIds(contacts.map((c) => c.id).filter((x) => x !== id));
+    } else {
+      setSelectedContactIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    }
   };
 
   const handleSelectAllContacts = () => {
-    if (selectedContactIds.length === contacts.length) {
+    if (selectedContactIds.length === contacts.length || selectAllAcrossCrm) {
       setSelectedContactIds([]);
+      setSelectAllAcrossCrm(false);
     } else {
       setSelectedContactIds(contacts.map((c) => c.id));
+      setSelectAllAcrossCrm(false);
     }
   };
 
-  const handlePopulateDialerFromContacts = () => {
-    const chosen = contacts.filter((c) => selectedContactIds.includes(c.id));
-    if (chosen.length === 0) {
-      showToast('Select one or more contacts to dial.', 'error');
-      return;
+  const handlePopulateDialerFromContacts = async () => {
+    let numbers = '';
+    let count = 0;
+
+    if (selectAllAcrossCrm) {
+      showToast(`Loading all ${totalContacts.toLocaleString()} contacts from CRM...`, 'success');
+      try {
+        const queryParams = new URLSearchParams({ all_phones: 'true' });
+        if (contactSearch) queryParams.set('search', contactSearch);
+        if (selectedGroup && selectedGroup !== 'All Groups') queryParams.set('group', selectedGroup);
+
+        const res = await fetch(`/api/contacts?${queryParams.toString()}`);
+        const data = await res.json();
+        const allPhones = data.phones || [];
+        numbers = allPhones.join('<');
+        count = allPhones.length;
+      } catch (err: any) {
+        showToast(`Failed to load contact phones: ${err.message}`, 'error');
+        return;
+      }
+    } else {
+      const chosen = contacts.filter((c) => selectedContactIds.includes(c.id));
+      if (chosen.length === 0) {
+        showToast('Select one or more contacts to dial.', 'error');
+        return;
+      }
+      numbers = chosen.map((c) => c.phone).join('<');
+      count = chosen.length;
     }
-    const numbers = chosen.map((c) => c.phone).join('<');
+
     setDialTo(numbers);
     setActiveTab('dialer');
-    showToast(`Loaded ${chosen.length} contact(s) into Instant Call Launcher!`, 'success');
+    showToast(`🎯 Loaded ${count.toLocaleString()} recipient(s) into Instant Call Launcher!`, 'success');
+  };
+
+  const handleDialAllContacts = async () => {
+    showToast(`Loading all ${totalContacts.toLocaleString()} contacts from directory...`, 'success');
+    try {
+      const queryParams = new URLSearchParams({ all_phones: 'true' });
+      if (selectedGroup && selectedGroup !== 'All Groups') queryParams.set('group', selectedGroup);
+
+      const res = await fetch(`/api/contacts?${queryParams.toString()}`);
+      const data = await res.json();
+      const allPhones = data.phones || [];
+      if (allPhones.length === 0) {
+        showToast('No dialable phone numbers found in directory.', 'error');
+        return;
+      }
+      setDialTo(allPhones.join('<'));
+      setActiveTab('dialer');
+      showToast(`🎯 Loaded ALL ${allPhones.length.toLocaleString()} contacts into Instant Call Launcher!`, 'success');
+    } catch (err: any) {
+      showToast(`Error loading contacts: ${err.message}`, 'error');
+    }
   };
 
   const handleDeduplicate = async () => {
+    setIsDeduplicating(true);
     try {
-      const res = await fetch('/api/contacts/deduplicate', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      showToast(data.message, 'success');
-      fetchContacts(contactSearch, selectedGroup);
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    }
-  };
-
-  const handleBulkDeleteContacts = async () => {
-    if (selectedContactIds.length === 0) {
-      showToast('Please select at least one contact to delete.', 'error');
-      return;
-    }
-    if (!confirm(`Are you sure you want to delete ${selectedContactIds.length} selected contact(s)?`)) {
-      return;
-    }
-
-    try {
-      const res = await fetch('/api/contacts', {
-        method: 'DELETE',
+      const res = await fetch('/api/contacts/deduplicate', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: selectedContactIds }),
+        body: JSON.stringify({ merge_by_name: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      showToast(data.message || `Deleted ${selectedContactIds.length} contact(s).`, 'success');
+      if (data.duplicates_removed > 0) {
+        showToast(
+          `🎉 Extensive Deduplication Complete: Removed ${data.duplicates_removed.toLocaleString()} duplicate(s), merged ${data.clusters_merged} cluster(s), and enriched ${data.fields_enriched} field(s)!`,
+          'success'
+        );
+      } else {
+        showToast(
+          `✅ All ${data.original_count?.toLocaleString() || 'contacts'} are unique! Scanned canonical E.164 formats across entire directory. (${data.name_groups_count || 0} multi-number name groups detected)`,
+          'success'
+        );
+      }
+      fetchContacts(contactSearch, selectedGroup);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setIsDeduplicating(false);
+    }
+  };
+
+  const handleBulkDeleteContacts = async () => {
+    if (!selectAllAcrossCrm && selectedContactIds.length === 0) {
+      showToast('Please select at least one contact to delete.', 'error');
+      return;
+    }
+
+    const countToDelete = selectAllAcrossCrm ? totalContacts : selectedContactIds.length;
+    if (
+      !confirm(
+        selectAllAcrossCrm
+          ? `⚠️ DANGER: Are you sure you want to delete ALL ${totalContacts.toLocaleString()} contacts across the entire database?`
+          : `Are you sure you want to delete ${selectedContactIds.length} selected contact(s)?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      if (selectAllAcrossCrm) {
+        const res = await fetch('/api/contacts?all=true', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        showToast('All contacts cleared from database.', 'success');
+      } else {
+        const res = await fetch('/api/contacts', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: selectedContactIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        showToast(data.message || `Deleted ${selectedContactIds.length} contact(s).`, 'success');
+      }
       setSelectedContactIds([]);
+      setSelectAllAcrossCrm(false);
       fetchContacts(contactSearch, selectedGroup);
     } catch (err: any) {
       showToast(err.message, 'error');
@@ -705,23 +804,63 @@ export default function VoiceCampaignDashboard() {
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="text-xs font-medium text-gray-300">Destination Phone Number(s)</label>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('contacts')}
-                      className="text-xs text-blue-400 hover:text-blue-300 flex items-center"
-                    >
-                      <Users className="w-3.5 h-3.5 mr-1" /> Pick from Contacts
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      {totalContacts > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleDialAllContacts}
+                          className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center font-medium"
+                        >
+                          <Phone className="w-3.5 h-3.5 mr-1" /> Load All ({totalContacts.toLocaleString()})
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('contacts')}
+                        className="text-xs text-blue-400 hover:text-blue-300 flex items-center"
+                      >
+                        <Users className="w-3.5 h-3.5 mr-1" /> Pick from Contacts
+                      </button>
+                    </div>
                   </div>
-                  <input
-                    type="text"
+
+                  {/* Recipient Audience Stats Pill */}
+                  {dialTo.trim() && (
+                    <div className="mb-2 p-2 bg-slate-900/70 border border-slate-800 rounded-lg flex items-center justify-between text-xs">
+                      <div className="flex items-center space-x-2 text-blue-300">
+                        <Phone className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span>
+                          Target Audience:{' '}
+                          <strong className="text-white font-mono">
+                            {dialTo.split(/[<,;\n]/).filter(Boolean).length.toLocaleString()}
+                          </strong>{' '}
+                          Recipients
+                        </span>
+                        {dialTo.split(/[<,;\n]/).filter(Boolean).length > 500 && (
+                          <span className="bg-blue-950 text-blue-400 text-[10px] px-2 py-0.5 rounded border border-blue-800 font-mono">
+                            ⚡ Auto-Chunking into {Math.ceil(dialTo.split(/[<,;\n]/).filter(Boolean).length / 500)} Carrier Batches
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDialTo('')}
+                        className="text-gray-400 hover:text-rose-400 text-[11px] underline"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+
+                  <textarea
+                    rows={3}
                     value={dialTo}
                     onChange={(e) => setDialTo(e.target.value)}
                     placeholder="+919876543210 (or separate multiple with < like +91987...<+91988...)"
-                    className="w-full bg-[#0b0f17] border border-gray-700 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none font-mono"
+                    className="w-full bg-[#0b0f17] border border-gray-700 rounded-lg px-3.5 py-2 text-xs text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none font-mono"
                   />
                   <p className="text-[11px] text-gray-500 mt-1">
-                    Format: International E.164 (`+91...`). Separate multiple recipients using `&lt;` for bulk broadcasting.
+                    Format: International E.164 (`+91...`). Supports broadcasting to thousands of recipients separated by `&lt;`. Batches exceeding 500 are automatically chunked into carrier-safe queue batches.
                   </p>
                 </div>
 
@@ -874,28 +1013,41 @@ export default function VoiceCampaignDashboard() {
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={handlePopulateDialerFromContacts}
-                  disabled={selectedContactIds.length === 0}
+                  disabled={selectedContactIds.length === 0 && !selectAllAcrossCrm}
                   className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium shadow-sm transition-all"
                 >
                   <PhoneCall className="w-3.5 h-3.5 mr-1.5" />
-                  Dial Selected ({selectedContactIds.length})
+                  Dial Selected ({selectAllAcrossCrm ? totalContacts.toLocaleString() : selectedContactIds.length})
                 </button>
+
+                {totalContacts > 0 && (
+                  <button
+                    onClick={handleDialAllContacts}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium shadow-sm transition-all"
+                    title={`Load all ${totalContacts.toLocaleString()} contacts into dialer`}
+                  >
+                    <PhoneForwarded className="w-3.5 h-3.5 mr-1.5" />
+                    Dial All ({totalContacts.toLocaleString()})
+                  </button>
+                )}
 
                 <button
                   onClick={handleBulkDeleteContacts}
-                  disabled={selectedContactIds.length === 0}
+                  disabled={selectedContactIds.length === 0 && !selectAllAcrossCrm}
                   className="bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium shadow-sm transition-all"
                 >
                   <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-                  Delete Selected ({selectedContactIds.length})
+                  Delete Selected ({selectAllAcrossCrm ? totalContacts.toLocaleString() : selectedContactIds.length})
                 </button>
 
                 <button
                   onClick={handleDeduplicate}
-                  className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium transition-all"
+                  disabled={isDeduplicating}
+                  className="bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs px-3 py-2 rounded-lg flex items-center font-medium transition-all"
+                  title="Extensive multi-pass phone normalization and contact fusion"
                 >
-                  <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                  Deduplicate
+                  <Sparkles className={`w-3.5 h-3.5 mr-1.5 ${isDeduplicating ? 'animate-spin' : ''}`} />
+                  {isDeduplicating ? 'Deduplicating...' : 'Deduplicate'}
                 </button>
 
                 <button
@@ -950,6 +1102,36 @@ export default function VoiceCampaignDashboard() {
               )}
             </div>
 
+            {/* Selection Announcement Banner (Gmail-style CRM Selection) */}
+            {selectedContactIds.length === contacts.length && contacts.length > 0 && totalContacts > contacts.length && (
+              <div className="bg-blue-950/40 border border-blue-800/60 rounded-lg px-4 py-2.5 text-center text-xs text-blue-200 flex items-center justify-center gap-2">
+                {!selectAllAcrossCrm ? (
+                  <>
+                    <span>All <strong>{contacts.length.toLocaleString()}</strong> contacts on this page are selected.</span>
+                    <button
+                      onClick={() => setSelectAllAcrossCrm(true)}
+                      className="text-white underline font-semibold hover:text-blue-100 ml-1 cursor-pointer"
+                    >
+                      Select all {totalContacts.toLocaleString()} contacts across entire CRM
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span>🎯 All <strong>{totalContacts.toLocaleString()}</strong> contacts across the entire CRM are selected.</span>
+                    <button
+                      onClick={() => {
+                        setSelectAllAcrossCrm(false);
+                        setSelectedContactIds([]);
+                      }}
+                      className="text-white underline font-semibold hover:text-blue-100 ml-1 cursor-pointer"
+                    >
+                      Clear selection
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Contacts Table */}
             <div className="overflow-x-auto min-h-[200px]">
               {loadingContacts ? (
@@ -968,7 +1150,10 @@ export default function VoiceCampaignDashboard() {
                       <th className="py-2 w-8">
                         <input
                           type="checkbox"
-                          checked={selectedContactIds.length === contacts.length && contacts.length > 0}
+                          checked={
+                            selectAllAcrossCrm ||
+                            (selectedContactIds.length === contacts.length && contacts.length > 0)
+                          }
                           onChange={handleSelectAllContacts}
                         />
                       </th>
@@ -981,7 +1166,7 @@ export default function VoiceCampaignDashboard() {
                   </thead>
                   <tbody className="divide-y divide-gray-800/80">
                     {contacts.map((c) => {
-                      const isSelected = selectedContactIds.includes(c.id);
+                      const isSelected = selectAllAcrossCrm || selectedContactIds.includes(c.id);
                       return (
                         <tr key={c.id} className={isSelected ? 'bg-blue-950/20' : ''}>
                           <td className="py-2.5">

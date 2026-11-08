@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getContacts, addContact, query } from '@/lib/db';
+import { getContacts, getContactsCount, getAllContactPhones, getContactGroups, addContact, query } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 
 export const dynamic = 'force-dynamic';
@@ -9,11 +9,30 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const search = searchParams.get('search') || '';
     const group = searchParams.get('group') || '';
+    const allPhones = searchParams.get('all_phones') === 'true';
+
+    if (allPhones) {
+      const phones = await getAllContactPhones({ search, group });
+      const total = await getContactsCount({ search, group });
+      return NextResponse.json({ total, phones });
+    }
+
     const limit = parseInt(searchParams.get('limit') || '500', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
-    const contacts = await getContacts({ search, group, limit, offset });
-    return NextResponse.json(contacts);
+    const [contacts, total, groups] = await Promise.all([
+      getContacts({ search, group, limit, offset }),
+      getContactsCount({ search, group }),
+      getContactGroups(),
+    ]);
+
+    return NextResponse.json({
+      total,
+      contacts,
+      groups,
+      limit,
+      offset,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

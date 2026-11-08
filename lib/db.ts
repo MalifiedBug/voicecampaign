@@ -130,6 +130,50 @@ export async function getContacts(options: { search?: string; group?: string; li
   return res.rows;
 }
 
+export async function getContactsCount(options: { search?: string; group?: string } = {}): Promise<number> {
+  const { search = '', group = '' } = options;
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (search.trim()) {
+    params.push(`%${search.trim().toLowerCase()}%`);
+    conditions.push(
+      `(LOWER(name) LIKE $${params.length} OR LOWER(phone) LIKE $${params.length} OR LOWER(COALESCE(organization, '')) LIKE $${params.length} OR LOWER(COALESCE(group_tag, '')) LIKE $${params.length})`
+    );
+  }
+
+  if (group && group !== 'All Groups') {
+    params.push(group);
+    conditions.push(`group_tag = $${params.length}`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const res = await query(`SELECT COUNT(*) as cnt FROM contacts ${whereClause}`, params);
+  return parseInt(res.rows[0]?.cnt || '0', 10);
+}
+
+export async function getAllContactPhones(options: { search?: string; group?: string } = {}): Promise<string[]> {
+  const { search = '', group = '' } = options;
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (search.trim()) {
+    params.push(`%${search.trim().toLowerCase()}%`);
+    conditions.push(
+      `(LOWER(name) LIKE $${params.length} OR LOWER(phone) LIKE $${params.length} OR LOWER(COALESCE(organization, '')) LIKE $${params.length} OR LOWER(COALESCE(group_tag, '')) LIKE $${params.length})`
+    );
+  }
+
+  if (group && group !== 'All Groups') {
+    params.push(group);
+    conditions.push(`group_tag = $${params.length}`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const res = await query(`SELECT phone FROM contacts ${whereClause} ORDER BY created_at DESC`, params);
+  return res.rows.map((r) => r.phone);
+}
+
 export async function getContactGroups(): Promise<string[]> {
   try {
     const res = await query(
@@ -389,6 +433,68 @@ export async function addCallLog(log: {
       log.xml_rendered || null,
     ]
   );
+}
+
+export async function bulkAddCallLogs(
+  logs: Array<{
+    id?: string;
+    schedule_id?: string;
+    schedule_name?: string;
+    to_number: string;
+    from_number: string;
+    audio_id?: string;
+    call_uuid?: string;
+    vobiz_api_id?: string;
+    status?: string;
+    notes?: string;
+    xml_rendered?: string;
+  }>
+): Promise<number> {
+  if (!logs || logs.length === 0) return 0;
+
+  const CHUNK_SIZE = 500;
+  let totalInserted = 0;
+  const now = new Date().toISOString();
+
+  for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
+    const chunk = logs.slice(i, i + CHUNK_SIZE);
+    const valueClauses: string[] = [];
+    const params: any[] = [];
+
+    chunk.forEach((l) => {
+      const pIdx = params.length;
+      params.push(
+        l.id || uuidv4(),
+        l.schedule_id || null,
+        l.schedule_name || null,
+        l.to_number,
+        l.from_number,
+        l.audio_id || null,
+        l.call_uuid ? String(l.call_uuid).slice(0, 255) : null,
+        l.vobiz_api_id ? String(l.vobiz_api_id).slice(0, 255) : null,
+        l.status || 'queued',
+        now,
+        l.notes || null,
+        l.xml_rendered || null
+      );
+      valueClauses.push(
+        `($${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, $${pIdx + 5}, $${pIdx + 6}, $${pIdx + 7}, $${pIdx + 8}, $${pIdx + 9}, $${pIdx + 10}, $${pIdx + 11}, $${pIdx + 12})`
+      );
+    });
+
+    const sql = `
+      INSERT INTO call_logs (
+        id, schedule_id, schedule_name, to_number, from_number,
+        audio_id, call_uuid, vobiz_api_id, status, initiated_at, notes, xml_rendered
+      ) VALUES ${valueClauses.join(', ')}
+      ON CONFLICT (id) DO NOTHING
+    `;
+
+    const res = await query(sql, params);
+    totalInserted += res.rowCount || chunk.length;
+  }
+
+  return totalInserted;
 }
 
 export async function getCallStats() {
