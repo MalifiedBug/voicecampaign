@@ -1,67 +1,44 @@
 import { NextResponse } from 'next/server';
-import { addContact } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
+import { bulkAddContacts } from '@/lib/db';
+import { parseVcfText, ParsedContact } from '@/lib/vcf';
 
 export const dynamic = 'force-dynamic';
 
-function parseVcfContent(content: string, defaultGroup: string = 'VCF-Import') {
-  const cards: Array<{
-    name: string;
-    phone: string;
-    email?: string;
-    organization?: string;
-    group_tag?: string;
-  }> = [];
-
-  const rawCards = content.split(/BEGIN:VCARD/i);
-
-  for (const block of rawCards) {
-    if (!block.trim()) continue;
-
-    let fn = '';
-    const phones: string[] = [];
-    let email = '';
-    let org = '';
-
-    const lines = block.split(/\r?\n/);
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-
-      if (line.toUpperCase().startsWith('FN:') || line.toUpperCase().startsWith('FN;')) {
-        const parts = line.split(':');
-        fn = parts.slice(1).join(':').trim();
-      } else if (line.toUpperCase().startsWith('TEL:') || line.toUpperCase().startsWith('TEL;')) {
-        const parts = line.split(':');
-        const phone = parts.slice(1).join(':').trim();
-        if (phone) phones.push(phone);
-      } else if (line.toUpperCase().startsWith('EMAIL:') || line.toUpperCase().startsWith('EMAIL;')) {
-        const parts = line.split(':');
-        email = parts.slice(1).join(':').trim();
-      } else if (line.toUpperCase().startsWith('ORG:') || line.toUpperCase().startsWith('ORG;')) {
-        const parts = line.split(':');
-        org = parts.slice(1).join(':').replace(/;/g, ' ').trim();
-      }
-    }
-
-    if (phones.length > 0) {
-      for (const p of phones) {
-        cards.push({
-          name: fn || 'Unnamed Contact',
-          phone: p,
-          email: email || undefined,
-          organization: org || undefined,
-          group_tag: defaultGroup,
-        });
-      }
-    }
-  }
-
-  return cards;
-}
-
 export async function POST(req: Request) {
   try {
+    const contentType = req.headers.get('content-type') || '';
+
+    // Mode 1: JSON payload with pre-parsed contacts array (chunked bulk upload)
+    if (contentType.includes('application/json')) {
+      const body = await req.json();
+      const rawContacts: ParsedContact[] = body.contacts || [];
+      const groupTag = body.group_tag || 'VCF-Import';
+
+      if (!Array.isArray(rawContacts) || rawContacts.length === 0) {
+        return NextResponse.json({ error: 'No contacts provided in batch' }, { status: 400 });
+      }
+
+      const contactsToInsert = rawContacts.map((c) => ({
+        name: c.name || 'Unnamed Contact',
+        phone: c.phone,
+        email: c.email,
+        organization: c.organization,
+        notes: c.notes,
+        group_tag: c.group_tag || groupTag,
+        source: 'vcf_import',
+      }));
+
+      const inserted = await bulkAddContacts(contactsToInsert);
+
+      return NextResponse.json({
+        success: true,
+        imported: inserted,
+        total_found: contactsToInsert.length,
+        message: `Successfully imported ${inserted} contact(s)!`,
+      });
+    }
+
+    // Mode 2: Multipart form file upload (for smaller files)
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const groupTag = (formData.get('group_tag') as string) || 'VCF-Import';
@@ -71,34 +48,30 @@ export async function POST(req: Request) {
     }
 
     const text = await file.text();
-    const contacts = parseVcfContent(text, groupTag);
+    const contacts = parseVcfText(text, '+91', groupTag);
 
     if (contacts.length === 0) {
-      return NextResponse.json({ error: 'No valid phone numbers found in VCF file.' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'No valid phone numbers found in VCF file.' },
+        { status: 400 }
+      );
     }
 
-    let imported = 0;
-    for (const c of contacts) {
-      await addContact({
-        id: uuidv4(),
-        name: c.name,
-        phone: c.phone,
-        email: c.email,
-        organization: c.organization,
-        group_tag: c.group_tag,
+    const inserted = await bulkAddContacts(
+      contacts.map((c) => ({
+        ...c,
         source: 'vcf_import',
-      });
-      imported++;
-    }
+      }))
+    );
 
     return NextResponse.json({
       success: true,
-      imported,
+      imported: inserted,
       total_found: contacts.length,
-      message: `Successfully imported ${imported} contact(s) from VCF!`,
+      message: `Successfully imported ${inserted} contact(s) from VCF!`,
     });
   } catch (err: any) {
+    console.error('VCF import error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
-

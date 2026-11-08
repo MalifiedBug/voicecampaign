@@ -25,6 +25,7 @@ import {
   UserPlus,
   Sparkles,
 } from 'lucide-react';
+import { parseVcfText } from '@/lib/vcf';
 
 export default function VoiceCampaignDashboard() {
   const [activeTab, setActiveTab] = useState<'dialer' | 'contacts' | 'audio' | 'schedules' | 'history' | 'settings'>('dialer');
@@ -179,6 +180,7 @@ export default function VoiceCampaignDashboard() {
   const [newContact, setNewContact] = useState({ name: '', phone: '', email: '', organization: '', group_tag: 'Farmer-Group' });
   const [vcfFile, setVcfFile] = useState<File | null>(null);
   const [isUploadingVcf, setIsUploadingVcf] = useState(false);
+  const [vcfProgress, setVcfProgress] = useState<{ current: number; total: number; percent: number; status: string } | null>(null);
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -294,25 +296,68 @@ export default function VoiceCampaignDashboard() {
   const handleVcfImport = async () => {
     if (!vcfFile) return;
     setIsUploadingVcf(true);
+    setVcfProgress({ current: 0, total: 0, percent: 0, status: 'Reading & parsing VCF file...' });
+
     try {
-      const formData = new FormData();
-      formData.append('file', vcfFile);
-      formData.append('group_tag', 'VCF-Import');
+      const text = await vcfFile.text();
+      const parsed = parseVcfText(text, '+91', 'VCF-Import');
 
-      const res = await fetch('/api/contacts/import-vcf', {
-        method: 'POST',
-        body: formData,
+      if (parsed.length === 0) {
+        throw new Error('No valid phone numbers found in VCF file.');
+      }
+
+      setVcfProgress({
+        current: 0,
+        total: parsed.length,
+        percent: 0,
+        status: `Found ${parsed.length} contacts. Uploading in batches...`,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
 
-      showToast(data.message, 'success');
+      const BATCH_SIZE = 400;
+      let totalImported = 0;
+
+      for (let i = 0; i < parsed.length; i += BATCH_SIZE) {
+        const batch = parsed.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(parsed.length / BATCH_SIZE);
+
+        setVcfProgress({
+          current: i,
+          total: parsed.length,
+          percent: Math.round((i / parsed.length) * 100),
+          status: `Uploading batch ${batchNum} of ${totalBatches}...`,
+        });
+
+        const res = await fetch('/api/contacts/import-vcf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contacts: batch,
+            group_tag: 'VCF-Import',
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Failed on batch ${batchNum}`);
+
+        totalImported += data.imported || batch.length;
+      }
+
+      setVcfProgress({
+        current: parsed.length,
+        total: parsed.length,
+        percent: 100,
+        status: 'Import completed successfully!',
+      });
+
+      showToast(`🎉 Successfully imported ${totalImported} contact(s) from ${vcfFile.name}!`, 'success');
       setVcfFile(null);
-      fetchContacts();
+      fetchContacts(contactSearch, selectedGroup);
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
       setIsUploadingVcf(false);
+      setTimeout(() => setVcfProgress(null), 3000);
     }
   };
 
@@ -987,30 +1032,56 @@ export default function VoiceCampaignDashboard() {
             </div>
 
             {/* VCF Import Section */}
-            <div className="mt-4 p-4 bg-slate-900/40 rounded-xl border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex items-center space-x-3">
-                <FileText className="w-6 h-6 text-blue-400" />
-                <div>
-                  <p className="text-xs font-medium text-white">Import Contacts from .VCF File</p>
-                  <p className="text-[11px] text-gray-400">Directly parses vCard contacts and syncs to Supabase.</p>
+            <div className="mt-4 p-4 bg-slate-900/40 rounded-xl border border-slate-800 flex flex-col gap-3">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center space-x-3">
+                  <FileText className="w-6 h-6 text-blue-400 shrink-0" />
+                  <div>
+                    <p className="text-xs font-medium text-white">Import Contacts from .VCF File (Bulk Upload)</p>
+                    <p className="text-[11px] text-gray-400">
+                      Client-side batch parser supports huge VCF contact lists (5MB, 20MB, 50MB+) without 413 payload limits.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 w-full sm:w-auto">
+                  <input
+                    type="file"
+                    accept=".vcf"
+                    disabled={isUploadingVcf}
+                    onChange={(e) => setVcfFile(e.target.files?.[0] || null)}
+                    className="text-xs text-gray-400 file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-slate-800 file:text-gray-200"
+                  />
+                  <button
+                    onClick={handleVcfImport}
+                    disabled={!vcfFile || isUploadingVcf}
+                    className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3.5 py-1.5 rounded-lg flex items-center font-medium shrink-0"
+                  >
+                    {isUploadingVcf ? 'Importing...' : 'Upload VCF'}
+                  </button>
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <input
-                  type="file"
-                  accept=".vcf"
-                  onChange={(e) => setVcfFile(e.target.files?.[0] || null)}
-                  className="text-xs text-gray-400 file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-slate-800 file:text-gray-200"
-                />
-                <button
-                  onClick={handleVcfImport}
-                  disabled={!vcfFile || isUploadingVcf}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg flex items-center font-medium"
-                >
-                  {isUploadingVcf ? 'Importing...' : 'Upload VCF'}
-                </button>
-              </div>
+              {/* Live Batch Progress Bar */}
+              {isUploadingVcf && vcfProgress && (
+                <div className="pt-2 border-t border-slate-800/80">
+                  <div className="flex justify-between items-center text-[11px] text-gray-300 mb-1.5 font-medium">
+                    <span className="flex items-center text-blue-300">
+                      <RefreshCw className="w-3 h-3 mr-1.5 animate-spin" />
+                      {vcfProgress.status}
+                    </span>
+                    <span className="font-mono text-xs font-bold text-blue-400">
+                      {vcfProgress.percent}% ({vcfProgress.current.toLocaleString()} / {vcfProgress.total.toLocaleString()})
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700/50">
+                    <div
+                      className="bg-gradient-to-r from-blue-600 to-indigo-500 h-2 rounded-full transition-all duration-150"
+                      style={{ width: `${vcfProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

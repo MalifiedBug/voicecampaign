@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { v4 as uuidv4 } from 'uuid';
 
 const SUPABASE_IPV4_POOLER =
   'postgresql://postgres.oyqcsfdzlbldrmykoosq:X#?S&8!HGFP!vH9@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres';
@@ -165,6 +166,60 @@ export async function addContact(contact: {
       new Date().toISOString(),
     ]
   );
+}
+
+export async function bulkAddContacts(
+  contacts: Array<{
+    name: string;
+    phone: string;
+    email?: string;
+    organization?: string;
+    notes?: string;
+    group_tag?: string;
+    source?: string;
+  }>
+): Promise<number> {
+  if (!contacts || contacts.length === 0) return 0;
+
+  const CHUNK_SIZE = 500;
+  let totalInserted = 0;
+
+  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+    const chunk = contacts.slice(i, i + CHUNK_SIZE);
+    const valueClauses: string[] = [];
+    const params: any[] = [];
+    const now = new Date().toISOString();
+
+    chunk.forEach((c) => {
+      const id = uuidv4();
+      const pIdx = params.length;
+      params.push(
+        id,
+        c.name || 'Unnamed Contact',
+        c.phone,
+        c.email || null,
+        c.organization || null,
+        c.notes || null,
+        c.group_tag || 'VCF-Import',
+        c.source || 'vcf_import',
+        now
+      );
+      valueClauses.push(
+        `($${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, $${pIdx + 5}, $${pIdx + 6}, $${pIdx + 7}, $${pIdx + 8}, $${pIdx + 9})`
+      );
+    });
+
+    const sql = `
+      INSERT INTO contacts (id, name, phone, email, organization, notes, group_tag, source, created_at)
+      VALUES ${valueClauses.join(', ')}
+      ON CONFLICT (id) DO NOTHING
+    `;
+
+    const res = await query(sql, params);
+    totalInserted += res.rowCount || chunk.length;
+  }
+
+  return totalInserted;
 }
 
 export async function deduplicateContacts(): Promise<{ original_count: number; final_count: number; duplicates_removed: number }> {
