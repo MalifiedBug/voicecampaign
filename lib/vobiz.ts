@@ -60,7 +60,7 @@ export async function makeOutboundCall(params: {
     throw new Error('No valid destination phone numbers provided.');
   }
 
-  const answerUrl = `${baseUrl}/api/webhook/answer?schedule_id=${encodeURIComponent(params.scheduleId || '')}&audio_id=${encodeURIComponent(params.audioId || '')}&loop=${params.loopCount || 1}`;
+  const answerUrl = `${baseUrl}/api/webhook/answer?schedule_id=${encodeURIComponent(params.scheduleId || '')}&audio_id=${encodeURIComponent(params.audioId || '')}&play_mode=${encodeURIComponent(params.playMode || 'audio')}&loop=${params.loopCount || 1}${params.ttsMessage ? `&tts_message=${encodeURIComponent(params.ttsMessage)}` : ''}`;
   const hangupUrl = `${baseUrl}/api/webhook/hangup`;
 
   const vobizEndpoint = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
@@ -123,8 +123,8 @@ export async function makeOutboundCall(params: {
       audio_id: params.audioId,
       call_uuid: String(singleUuid).slice(0, 100),
       vobiz_api_id: data.api_id ? String(data.api_id).slice(0, 100) : undefined,
-      status: 'in-progress',
-      notes: `Broadcast recipient ${i + 1} of ${recipients.length}. ApiId: ${data.api_id || ''}`,
+      status: 'ringing',
+      notes: `Dispatched and queued on carrier trunk (recipient ${i + 1} of ${recipients.length}). ApiId: ${data.api_id || ''}`,
     });
   }
 
@@ -152,6 +152,7 @@ export function buildAnswerXml(options: {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Speak voice="${ttsVoice}" language="${ttsLang}">${cleanMsg}</Speak>
+    <Wait length="1"/>
     <Hangup/>
 </Response>`;
   }
@@ -161,13 +162,15 @@ export function buildAnswerXml(options: {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Play loop="${loop}">${cleanUrl}</Play>
+    <Wait length="1"/>
     <Hangup/>
 </Response>`;
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak voice="WOMAN" language="en-IN">Hello, this is Voice Campaign. No audio was selected. Goodbye.</Speak>
+    <Speak voice="WOMAN" language="en-IN">Hello, this is Voice Campaign. No audio prompt was configured. Goodbye.</Speak>
+    <Wait length="1"/>
     <Hangup/>
 </Response>`;
 }

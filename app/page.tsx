@@ -1441,15 +1441,23 @@ export default function VoiceCampaignDashboard() {
                           <td className="text-gray-400">{log.from_number}</td>
                           <td>{log.schedule_name || 'Instant'}</td>
                           <td>
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isSuccess
-                                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                                  : 'bg-slate-800 text-gray-400'
-                              }`}
-                            >
-                              {log.status?.toUpperCase()}
-                            </span>
+                            {(() => {
+                              const s = (log.status || '').toLowerCase();
+                              let colorClass = 'bg-slate-800 text-gray-400 border border-gray-700';
+                              if (s === 'completed') colorClass = 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+                              else if (s === 'in-progress' || s === 'answered') colorClass = 'bg-blue-950 text-blue-300 border border-blue-800 animate-pulse';
+                              else if (s === 'ringing') colorClass = 'bg-purple-950 text-purple-300 border border-purple-800 animate-pulse';
+                              else if (s === 'queued') colorClass = 'bg-amber-950 text-amber-300 border border-amber-800';
+                              else if (s === 'busy') colorClass = 'bg-orange-950 text-orange-400 border border-orange-800';
+                              else if (s === 'no-answer') colorClass = 'bg-zinc-800 text-zinc-400 border border-zinc-700';
+                              else if (s === 'failed') colorClass = 'bg-rose-950 text-rose-400 border border-rose-800';
+
+                              return (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${colorClass}`}>
+                                  {log.status?.toUpperCase()}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td>{log.duration || 0}s</td>
                           <td className="text-gray-400">{log.hangup_cause || '—'}</td>

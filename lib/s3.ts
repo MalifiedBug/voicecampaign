@@ -5,8 +5,8 @@ const s3Endpoint = process.env.SUPABASE_S3_ENDPOINT || 'https://oyqcsfdzlbldrmyk
 const s3Region = process.env.SUPABASE_S3_REGION || 'ap-northeast-2';
 const s3AccessKey = process.env.SUPABASE_S3_ACCESS_KEY_ID || '7f485ec1e04bbf701b0ad59f8f042acc';
 const s3SecretKey = process.env.SUPABASE_S3_SECRET_ACCESS_KEY || '95412e148c23e4f99e4a54bc8793abedee83ca5dddfae9b1d17c397ff09cfa67';
-const s3Bucket = process.env.SUPABASE_S3_BUCKET || 'farmcalling-audio';
-const publicBaseUrl = process.env.SUPABASE_STORAGE_PUBLIC_URL || 'https://oyqcsfdzlbldrmykoosq.supabase.co/storage/v1/object/public';
+export const s3Bucket = process.env.SUPABASE_S3_BUCKET || 'farmcalling-audio';
+export const publicBaseUrl = process.env.SUPABASE_STORAGE_PUBLIC_URL || 'https://oyqcsfdzlbldrmykoosq.supabase.co/storage/v1/object/public';
 
 export const s3Client = new S3Client({
   region: s3Region,
