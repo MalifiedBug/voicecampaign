@@ -95,27 +95,46 @@ export async function makeOutboundCall(params: {
     throw new Error(errorMsg);
   }
 
-  const callUuid = data.request_uuid || data.api_id || uuidv4();
+  const recipients = formattedTo.split('<').map((s) => s.trim()).filter(Boolean);
 
-  // Log in call_logs table
-  await addCallLog({
-    id: uuidv4(),
-    schedule_id: params.scheduleId,
-    schedule_name: params.scheduleName || 'Instant Call',
-    to_number: formattedTo,
-    from_number: callerId,
-    audio_id: params.audioId,
-    call_uuid: callUuid,
-    vobiz_api_id: data.api_id,
-    status: 'in-progress',
-    notes: `Dispatched to ${formattedTo.split('<').length} recipient(s). Response: ${JSON.stringify(data)}`,
-  });
+  // Parse UUIDs returned by Vobiz (can be an array, delimited string, or single string)
+  let uuids: string[] = [];
+  if (Array.isArray(data.request_uuid)) {
+    uuids = data.request_uuid.map(String);
+  } else if (typeof data.request_uuid === 'string' && data.request_uuid.includes('<')) {
+    uuids = data.request_uuid.split('<').map((s) => s.trim());
+  } else if (typeof data.request_uuid === 'string' && data.request_uuid.includes(',')) {
+    uuids = data.request_uuid.split(',').map((s) => s.trim());
+  } else if (typeof data.request_uuid === 'string') {
+    uuids = [data.request_uuid];
+  }
+
+  // Create clean individual CDR record for each recipient
+  for (let i = 0; i < recipients.length; i++) {
+    const singleTo = recipients[i];
+    const singleUuid = uuids[i] || (uuids.length === 1 && recipients.length === 1 ? uuids[0] : `${uuids[0] || 'bulk'}_${i + 1}`);
+
+    await addCallLog({
+      id: uuidv4(),
+      schedule_id: params.scheduleId,
+      schedule_name: params.scheduleName || (recipients.length > 1 ? `Bulk Call (${i + 1}/${recipients.length})` : 'Instant Call'),
+      to_number: singleTo,
+      from_number: callerId,
+      audio_id: params.audioId,
+      call_uuid: String(singleUuid).slice(0, 100),
+      vobiz_api_id: data.api_id ? String(data.api_id).slice(0, 100) : undefined,
+      status: 'in-progress',
+      notes: `Broadcast recipient ${i + 1} of ${recipients.length}. ApiId: ${data.api_id || ''}`,
+    });
+  }
+
+  const primaryCallUuid = uuids[0] || (typeof data.request_uuid === 'string' ? data.request_uuid : uuidv4());
 
   return {
     success: true,
     data,
-    callUuid,
-    recipients: formattedTo.split('<'),
+    callUuid: primaryCallUuid,
+    recipients,
   };
 }
 
