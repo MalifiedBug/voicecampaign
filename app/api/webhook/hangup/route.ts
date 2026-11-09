@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { query } from '@/lib/db';
+import { query, addSchedule } from '@/lib/db';
+import { v4 as uuidv4 } from 'uuid';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,6 +79,93 @@ async function handleHangup(req: Request) {
       finalStatus = 'failed';
     }
 
+    // Retrieve corresponding call log record
+    let callLog: any = null;
+    if (callUuid) {
+      const logRes = await query(
+        `SELECT * FROM call_logs WHERE call_uuid = $1 OR vobiz_api_id = $1 LIMIT 1`,
+        [String(callUuid).slice(0, 100)]
+      );
+      if (logRes.rows.length > 0) callLog = logRes.rows[0];
+    }
+
+    const toNumber = callLog?.to_number || payload.To || payload.to || searchParams.get('To') || '';
+    let retryNote = '';
+
+    // Handle Completed Call: Cancel any pending retry campaigns for this recipient
+    if (finalStatus === 'completed' && duration > 0 && toNumber) {
+      await query(
+        `UPDATE schedules
+         SET status = 'cancelled'
+         WHERE to_number = $1
+           AND name LIKE 'Auto-Retry%'
+           AND status = 'active'`,
+        [toNumber]
+      ).catch((err) => console.warn('Could not cancel pending retries:', err));
+    }
+
+    // Handle Unanswered/Cancelled/Busy Call: Auto-Redial after configured delay
+    const retryDelayMinutes = parseInt(searchParams.get('retry_delay') || '0', 10);
+    const maxRetries = parseInt(searchParams.get('max_retries') || '1', 10);
+    const currentAttempt = parseInt(searchParams.get('attempt') || '0', 10);
+
+    const isUnanswered =
+      finalStatus === 'no-answer' ||
+      finalStatus === 'busy' ||
+      finalStatus === 'failed' ||
+      duration === 0;
+
+    if (isUnanswered && retryDelayMinutes > 0 && toNumber) {
+      if (currentAttempt < maxRetries) {
+        // Anti-spam check: Verify no active duplicate retry is already queued
+        const existingRetry = await query(
+          `SELECT id FROM schedules
+           WHERE to_number = $1
+             AND name LIKE 'Auto-Retry%'
+             AND status = 'active'
+           LIMIT 1`,
+          [toNumber]
+        );
+
+        if (existingRetry.rows.length === 0) {
+          const nextAttempt = currentAttempt + 1;
+          const retryScheduleId = uuidv4();
+          const nextRunDate = new Date(Date.now() + retryDelayMinutes * 60 * 1000);
+          const nextRunAt = nextRunDate.toISOString();
+
+          const audioId = searchParams.get('audio_id') || callLog?.audio_id || null;
+          const playMode = searchParams.get('play_mode') || 'audio';
+          const loopCount = parseInt(searchParams.get('loop') || '1', 10);
+          const ttsMessage = searchParams.get('tts_message') || '';
+          const scheduleName = `Auto-Retry: ${toNumber} (${nextAttempt}/${maxRetries} in ${retryDelayMinutes}m)`;
+
+          await addSchedule({
+            id: retryScheduleId,
+            name: scheduleName,
+            to_number: toNumber,
+            schedule_type: 'once',
+            scheduled_datetime: nextRunAt,
+            next_run_at: nextRunAt,
+            status: 'active',
+            audio_id: audioId,
+            play_mode: playMode,
+            tts_message: ttsMessage || null,
+            loop_count: loopCount,
+          });
+
+          const istTime = nextRunDate.toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+
+          retryNote = ` | 🔄 Auto-redial scheduled in ${retryDelayMinutes}m (at ${istTime} IST, attempt ${nextAttempt}/${maxRetries})`;
+        }
+      } else {
+        retryNote = ` | 🛑 Max auto-redial attempts reached (${maxRetries}/${maxRetries})`;
+      }
+    }
+
     if (callUuid) {
       await query(
         `UPDATE call_logs
@@ -92,7 +180,7 @@ async function handleHangup(req: Request) {
           duration,
           hangupCause,
           new Date().toISOString(),
-          `Call terminated with ${hangupCause} (${duration}s)`,
+          `Call terminated with ${hangupCause} (${duration}s)${retryNote}`,
           String(callUuid).slice(0, 100),
         ]
       );
@@ -103,6 +191,7 @@ async function handleHangup(req: Request) {
       processed_uuid: callUuid,
       status: finalStatus,
       duration,
+      auto_retry_scheduled: Boolean(retryNote && !retryNote.includes('Max')),
     });
   } catch (err: any) {
     console.error('Hangup webhook error:', err);

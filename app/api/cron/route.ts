@@ -30,6 +30,20 @@ async function handleCron(req: Request) {
 
     for (const schedule of dueSchedules) {
       try {
+        const isRetry = schedule.name?.startsWith('Auto-Retry:');
+        let retryDelayMinutes = 0;
+        let maxRetries = 1;
+        let currentAttempt = 1;
+
+        if (isRetry) {
+          const match = schedule.name.match(/\((\d+)\/(\d+)\s+in\s+(\d+)m\)/);
+          if (match) {
+            currentAttempt = parseInt(match[1], 10);
+            maxRetries = parseInt(match[2], 10);
+            retryDelayMinutes = parseInt(match[3], 10);
+          }
+        }
+
         const callRes = await makeOutboundCall({
           to: schedule.to_number,
           audioId: schedule.audio_id,
@@ -38,6 +52,9 @@ async function handleCron(req: Request) {
           loopCount: schedule.loop_count,
           scheduleId: schedule.id,
           scheduleName: schedule.name,
+          retryDelayMinutes,
+          maxRetries,
+          currentAttempt,
         });
 
         // Compute next run time for recurring schedules

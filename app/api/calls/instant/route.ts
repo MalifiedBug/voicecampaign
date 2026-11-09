@@ -18,6 +18,8 @@ export async function POST(req: Request) {
     const ttsMessage = body.tts_message || '';
     const loopCount = parseInt(body.loop_count || '1', 10);
     const scheduleName = body.schedule_name || 'Instant Call';
+    const retryDelayMinutes = parseInt(body.retry_delay_minutes ?? '10', 10);
+    const maxRetries = parseInt(body.max_retries ?? '1', 10);
 
     const result = await makeOutboundCall({
       to,
@@ -26,6 +28,9 @@ export async function POST(req: Request) {
       ttsMessage,
       loopCount,
       scheduleName,
+      retryDelayMinutes,
+      maxRetries,
+      currentAttempt: 0,
     });
 
     return NextResponse.json({

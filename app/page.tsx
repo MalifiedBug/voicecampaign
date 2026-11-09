@@ -63,6 +63,18 @@ export default function VoiceCampaignDashboard() {
     fetchSchedules();
     fetchLogs();
     fetchSettings();
+
+    // Auto-trigger due cron/retries and refresh call statistics every 30 seconds
+    const interval = setInterval(async () => {
+      try {
+        await fetch('/api/cron');
+        fetchSchedules();
+        fetchLogs();
+        fetchStats();
+      } catch (e) {}
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const fetchStats = async () => {
@@ -145,6 +157,7 @@ export default function VoiceCampaignDashboard() {
   const [dialPlayMode, setDialPlayMode] = useState<'audio' | 'tts'>('audio');
   const [dialTtsMessage, setDialTtsMessage] = useState('Hello! This is an important automated alert from Voice Campaign. Have a great day!');
   const [dialLoopCount, setDialLoopCount] = useState(1);
+  const [dialRetryOption, setDialRetryOption] = useState<'10' | '10_2' | '5' | '15' | '30' | '0'>('10');
   const [isDialing, setIsDialing] = useState(false);
 
   const handleInstantCall = async (e: React.FormEvent) => {
@@ -156,6 +169,25 @@ export default function VoiceCampaignDashboard() {
 
     setIsDialing(true);
     try {
+      let retryDelayMinutes = 10;
+      let maxRetries = 1;
+      if (dialRetryOption === '0') {
+        retryDelayMinutes = 0;
+        maxRetries = 0;
+      } else if (dialRetryOption === '10_2') {
+        retryDelayMinutes = 10;
+        maxRetries = 2;
+      } else if (dialRetryOption === '5') {
+        retryDelayMinutes = 5;
+        maxRetries = 1;
+      } else if (dialRetryOption === '15') {
+        retryDelayMinutes = 15;
+        maxRetries = 1;
+      } else if (dialRetryOption === '30') {
+        retryDelayMinutes = 30;
+        maxRetries = 1;
+      }
+
       const res = await fetch('/api/calls/instant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -165,6 +197,8 @@ export default function VoiceCampaignDashboard() {
           play_mode: dialPlayMode,
           tts_message: dialTtsMessage,
           loop_count: dialLoopCount,
+          retry_delay_minutes: retryDelayMinutes,
+          max_retries: maxRetries,
           schedule_name: 'Instant Dialer',
         }),
       });
@@ -175,6 +209,7 @@ export default function VoiceCampaignDashboard() {
       showToast(`🎉 Call dispatched to ${data.recipients?.length || 1} recipient(s)! (UUID: ${data.callUuid?.slice(0, 8)}...)`, 'success');
       fetchLogs();
       fetchStats();
+      fetchSchedules();
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
@@ -864,7 +899,7 @@ export default function VoiceCampaignDashboard() {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label className="text-xs font-medium text-gray-300 block mb-1.5">Audio Prompt to Play</label>
                     <select
@@ -891,6 +926,25 @@ export default function VoiceCampaignDashboard() {
                       onChange={(e) => setDialLoopCount(parseInt(e.target.value) || 1)}
                       className="w-full bg-[#0b0f17] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none"
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-gray-300 block mb-1.5 flex items-center justify-between">
+                      <span>Auto-Redial if Unanswered</span>
+                      <span className="text-[10px] text-emerald-400 font-semibold">10m Cooldown</span>
+                    </label>
+                    <select
+                      value={dialRetryOption}
+                      onChange={(e) => setDialRetryOption(e.target.value as any)}
+                      className="w-full bg-[#0b0f17] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="10">🔄 Redial after 10 mins (1 retry) [Recommended]</option>
+                      <option value="10_2">🔄 Redial after 10 mins (2 retries)</option>
+                      <option value="5">🔄 Redial after 5 mins (1 retry)</option>
+                      <option value="15">🔄 Redial after 15 mins (1 retry)</option>
+                      <option value="30">🔄 Redial after 30 mins (1 retry)</option>
+                      <option value="0">❌ Disabled (Single attempt only)</option>
+                    </select>
                   </div>
                 </div>
 
@@ -1609,7 +1663,18 @@ export default function VoiceCampaignDashboard() {
                     <tbody className="divide-y divide-gray-800">
                       {schedules.map((s) => (
                         <tr key={s.id}>
-                          <td className="py-2.5 font-medium text-white">{s.name}</td>
+                          <td className="py-2.5 font-medium text-white">
+                            {s.name.startsWith('Auto-Retry:') ? (
+                              <span className="flex items-center">
+                                <span className="bg-blue-950 text-blue-300 border border-blue-800 text-[10px] px-1.5 py-0.5 rounded font-mono mr-2 shrink-0">
+                                  🔁 REDIAL
+                                </span>
+                                {s.name}
+                              </span>
+                            ) : (
+                              s.name
+                            )}
+                          </td>
                           <td className="font-mono text-emerald-400">{s.to_number}</td>
                           <td>{s.schedule_type === 'interval' ? `Every ${s.interval_value} ${s.interval_unit}` : 'One-Time'}</td>
                           <td>
@@ -1716,7 +1781,15 @@ export default function VoiceCampaignDashboard() {
                             })()}
                           </td>
                           <td>{log.duration || 0}s</td>
-                          <td className="text-gray-400">{log.hangup_cause || '—'}</td>
+                          <td className="text-gray-400">
+                            <div>{log.hangup_cause || '—'}</div>
+                            {log.notes && log.notes.includes('Auto-redial scheduled') && (
+                              <div className="text-[10px] text-blue-400 flex items-center mt-0.5 font-medium">
+                                <RefreshCw className="w-2.5 h-2.5 mr-1 animate-spin shrink-0" />
+                                {log.notes.split('🔄')[1] ? log.notes.split('🔄')[1].trim() : 'Auto-redial scheduled in 10m'}
+                              </div>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}

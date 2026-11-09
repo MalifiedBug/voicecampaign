@@ -40,6 +40,9 @@ export async function makeOutboundCall(params: {
   loopCount?: number;
   scheduleId?: string;
   scheduleName?: string;
+  retryDelayMinutes?: number;
+  maxRetries?: number;
+  currentAttempt?: number;
 }) {
   const settings = await getSettings();
   const authId = settings.auth_id || process.env.VOBIZ_AUTH_ID;
@@ -61,7 +64,19 @@ export async function makeOutboundCall(params: {
   }
 
   const answerUrl = `${baseUrl}/api/webhook/answer?schedule_id=${encodeURIComponent(params.scheduleId || '')}&audio_id=${encodeURIComponent(params.audioId || '')}&play_mode=${encodeURIComponent(params.playMode || 'audio')}&loop=${params.loopCount || 1}${params.ttsMessage ? `&tts_message=${encodeURIComponent(params.ttsMessage)}` : ''}`;
-  const hangupUrl = `${baseUrl}/api/webhook/hangup`;
+
+  const hangupParams = new URLSearchParams();
+  if (params.retryDelayMinutes) hangupParams.set('retry_delay', String(params.retryDelayMinutes));
+  if (params.maxRetries) hangupParams.set('max_retries', String(params.maxRetries));
+  if (params.currentAttempt) hangupParams.set('attempt', String(params.currentAttempt));
+  if (params.audioId) hangupParams.set('audio_id', params.audioId);
+  if (params.playMode) hangupParams.set('play_mode', params.playMode);
+  if (params.loopCount) hangupParams.set('loop', String(params.loopCount));
+  if (params.ttsMessage) hangupParams.set('tts_message', params.ttsMessage);
+  if (params.scheduleName) hangupParams.set('schedule_name', params.scheduleName);
+
+  const hangupQuery = hangupParams.toString();
+  const hangupUrl = `${baseUrl}/api/webhook/hangup${hangupQuery ? `?${hangupQuery}` : ''}`;
 
   const vobizEndpoint = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
   const basicAuth = Buffer.from(`${authId}:${authToken}`).toString('base64');
@@ -189,8 +204,9 @@ export function buildAnswerXml(options: {
     const cleanMsg = ttsMessage.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak voice="${ttsVoice}" language="${ttsLang}">${cleanMsg}</Speak>
     <Wait length="1"/>
+    <Speak voice="${ttsVoice}" language="${ttsLang}">${cleanMsg}</Speak>
+    <Wait length="2"/>
     <Hangup/>
 </Response>`;
   }
@@ -199,14 +215,16 @@ export function buildAnswerXml(options: {
     const cleanUrl = audioUrl.replace(/&/g, '&amp;');
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Play loop="${loop}">${cleanUrl}</Play>
     <Wait length="1"/>
+    <Play loop="${loop}">${cleanUrl}</Play>
+    <Wait length="2"/>
     <Hangup/>
 </Response>`;
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+    <Wait length="1"/>
     <Speak voice="WOMAN" language="en-IN">Hello, this is Voice Campaign. No audio prompt was configured. Goodbye.</Speak>
     <Wait length="1"/>
     <Hangup/>
